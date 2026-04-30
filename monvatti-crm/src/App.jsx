@@ -2760,7 +2760,7 @@ function BoardFormModal({initial={},onSave,onCancel}) {
 // ─────────────────────────────────────────────────────────────────────────────
 // SIDEBAR — responsiva com drawer no mobile
 // ─────────────────────────────────────────────────────────────────────────────
-function Sidebar({boards,currentBoardId,currentUser,wsNome,dark,onToggleDark,perms,onSelectBoard,onAddBoard,onEditBoard,onDelBoard,onReorderBoards,onBoardSettings,onDuplicateBoard,onProfile,onAdmin,onLogout,open,onClose}) {
+function Sidebar({boards,currentBoardId,currentUser,wsNome,dark,onToggleDark,perms,onSelectBoard,onAddBoard,onEditBoard,onDelBoard,onReorderBoards,onBoardSettings,onDuplicateBoard,onProfile,onAdmin,onDashboard,onLogout,open,onClose}) {
   const {isMobile}=useBreakpoint();
   const [boardMenu,setBoardMenu]=useState(null);
   const [boardMenuPos,setBoardMenuPos]=useState({top:0,left:248});
@@ -2795,6 +2795,17 @@ function Sidebar({boards,currentBoardId,currentUser,wsNome,dark,onToggleDark,per
       </div>
       {/* Boards */}
       <div style={{padding:"14px 14px 6px",flex:1,overflowY:"auto"}}>
+        {/* Dashboard link */}
+        <div onClick={()=>{onDashboard&&onDashboard();if(isMobile)onClose();}}
+          style={{display:"flex",alignItems:"center",gap:9,padding:"9px 11px",borderRadius:9,cursor:"pointer",
+            color:"rgba(255,255,255,.65)",fontSize:13,marginBottom:10,
+            background:"transparent"}}
+          onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.1)"}
+          onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+          <span style={{fontSize:17,flexShrink:0}}>📊</span>
+          <span style={{flex:1}}>Dashboard</span>
+        </div>
+        <div style={{height:1,background:"rgba(255,255,255,.1)",marginBottom:10}}/>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8,padding:"0 4px"}}>
           <div style={{fontSize:10,color:"rgba(255,255,255,.4)",textTransform:"uppercase",letterSpacing:.7,fontWeight:700}}>Quadros</div>
           <button onClick={onAddBoard} style={{background:"none",border:"none",cursor:"pointer",color:"rgba(255,255,255,.5)",fontSize:22,lineHeight:1}}
@@ -3200,6 +3211,582 @@ function RegisterPage({onSwitch}) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DASHBOARD PAGE — métricas em tempo real do CRM Monvatti
+// ─────────────────────────────────────────────────────────────────────────────
+
+function BarChartSVG({data=[],color="var(--blue)",height=80}){
+  if(!data.length)return null;
+  const max=Math.max(...data.map(d=>d.value),1);
+  const w=100/data.length;
+  return(
+    <svg width="100%" height={height} style={{overflow:"visible"}}>
+      {data.map((d,i)=>{
+        const bh=(d.value/max)*(height-20);
+        const x=i*w+w*.1;
+        const bw=w*.8;
+        const y=height-20-bh;
+        return(<g key={i}>
+          <rect x={`${x}%`} y={y} width={`${bw}%`} height={Math.max(bh,2)}
+            fill={d.highlight?color:"var(--border)"} rx={3}
+            style={{transition:"height .4s ease,y .4s ease"}}/>
+          <text x={`${x+bw/2}%`} y={height-4} textAnchor="middle"
+            style={{fontSize:9,fill:"var(--text3)",fontFamily:"system-ui"}}>{d.label}</text>
+        </g>);
+      })}
+    </svg>
+  );
+}
+
+function DonutSVG({segments=[],size=120}){
+  const total=segments.reduce((s,x)=>s+x.value,0)||1;
+  let angle=-90;
+  const r=40,cx=50,cy=50;
+  const p2xy=(deg,radius)=>{
+    const rad=(deg*Math.PI)/180;
+    return{x:cx+radius*Math.cos(rad),y:cy+radius*Math.sin(rad)};
+  };
+  const paths=[];
+  for(const seg of segments){
+    if(!seg.value)continue;
+    const sweep=(seg.value/total)*360;
+    const large=sweep>180?1:0;
+    const start=p2xy(angle,r);
+    const end=p2xy(angle+sweep-.5,r);
+    paths.push({d:`M ${cx} ${cy} L ${start.x} ${start.y} A ${r} ${r} 0 ${large} 1 ${end.x} ${end.y} Z`,color:seg.color});
+    angle+=sweep;
+  }
+  return(
+    <svg viewBox="0 0 100 100" width={size} height={size}>
+      <circle cx={cx} cy={cy} r={r} fill="var(--surface2)"/>
+      {paths.map((p,i)=><path key={i} d={p.d} fill={p.color} opacity={.9}/>)}
+      <circle cx={cx} cy={cy} r={r*.55} fill="var(--surface)"/>
+    </svg>
+  );
+}
+
+function HBarSVG({items=[]}){
+  if(!items.length)return null;
+  const max=Math.max(...items.map(x=>x.value),1);
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:6,width:"100%"}}>
+      {items.map((item,i)=>(
+        <div key={i} style={{display:"flex",alignItems:"center",gap:8,width:"100%"}}>
+          <div style={{fontSize:11,color:"var(--text2)",width:120,flexShrink:0,textAlign:"right",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.label}</div>
+          <div style={{flex:1,background:"var(--surface3)",borderRadius:4,height:14,overflow:"hidden"}}>
+            <div style={{height:"100%",width:`${(item.value/max)*100}%`,background:item.color||"var(--blue)",borderRadius:4,transition:"width .4s ease",minWidth:item.value>0?4:0}}/>
+          </div>
+          <div style={{fontSize:11,fontWeight:700,color:"var(--text)",width:30,textAlign:"right",flexShrink:0}}>{item.value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function KpiCard({title,value,sub,icon,color="#3145FF",progress=null,badge=null}){
+  const{isMobile}=useBreakpoint();
+  return(
+    <div style={{background:"var(--surface)",borderRadius:14,padding:isMobile?"14px 16px":"18px 22px",
+      border:"1px solid var(--border)",boxShadow:"0 2px 12px var(--shadow)",
+      display:"flex",flexDirection:"column",gap:8,minWidth:0,position:"relative",overflow:"hidden"}}>
+      <div style={{position:"absolute",top:-10,right:-10,width:60,height:60,borderRadius:"50%",background:color,opacity:.07}}/>
+      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8}}>
+        <div style={{fontSize:11,fontWeight:700,color:"var(--text3)",textTransform:"uppercase",letterSpacing:.6,lineHeight:1.3}}>{title}</div>
+        {icon&&<div style={{fontSize:18,flexShrink:0,opacity:.7}}>{icon}</div>}
+      </div>
+      <div style={{fontSize:isMobile?20:24,fontWeight:900,color:"var(--text)",lineHeight:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{value}</div>
+      {progress!=null&&(
+        <div>
+          <div style={{height:5,background:"var(--surface3)",borderRadius:3,overflow:"hidden",marginBottom:4}}>
+            <div style={{height:"100%",width:`${Math.min(progress,100)}%`,background:progress>=100?"#059669":color,borderRadius:3,transition:"width .5s ease"}}/>
+          </div>
+          <div style={{fontSize:10,color:"var(--text3)"}}>{Math.round(progress)}% qualificados</div>
+        </div>
+      )}
+      {sub&&<div style={{fontSize:11,color:"var(--text3)",marginTop:-2}}>{sub}</div>}
+      {badge&&<div style={{display:"inline-flex",alignItems:"center",gap:5,background:(badge.bg||"#05996920"),borderRadius:6,padding:"2px 8px",alignSelf:"flex-start"}}>
+        <div style={{width:6,height:6,borderRadius:"50%",background:badge.color||"#059669"}}/>
+        <span style={{fontSize:10,fontWeight:700,color:badge.color||"#059669"}}>{badge.label}</span>
+      </div>}
+    </div>
+  );
+}
+
+function ChartCard({title,subtitle,children,action}){
+  const{isMobile}=useBreakpoint();
+  return(
+    <div style={{background:"var(--surface)",borderRadius:14,padding:isMobile?"14px":"20px 22px",
+      border:"1px solid var(--border)",boxShadow:"0 2px 12px var(--shadow)",
+      display:"flex",flexDirection:"column",gap:14,minWidth:0}}>
+      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}}>
+        <div>
+          <div style={{fontWeight:800,fontSize:13,color:"var(--text)"}}>{title}</div>
+          {subtitle&&<div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>{subtitle}</div>}
+        </div>
+        {action}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function DashboardPage({onBack,wsId,allUsers,perms,profile}){
+  const{isMobile,width}=useBreakpoint();
+  const toast=useToast();
+  const containerRef=useRef();
+
+  const todayMes=()=>{const n=new Date();return`${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,"0")}`;};
+  const[filterMode,setFilterMode]=useState("month");
+  const[selMonth,setSelMonth]=useState(todayMes);
+  const[rangeStart,setRangeStart]=useState("");
+  const[rangeEnd,setRangeEnd]=useState("");
+  const[rawItems,setRawItems]=useState([]);
+  const[rawVals,setRawVals]=useState([]);
+  const[boards,setBoards]=useState([]);
+  const[cols,setCols]=useState([]);
+  const[loading,setLoading]=useState(true);
+  const[lastUpdate,setLastUpdate]=useState(null);
+  const[goal,setGoal]=useState(0);
+  const[editGoal,setEditGoal]=useState(false);
+  const[goalInput,setGoalInput]=useState("");
+  const[savingGoal,setSavingGoal]=useState(false);
+  const[fullscreen,setFullscreen]=useState(false);
+
+  const toggleFS=()=>{
+    if(!fullscreen)(containerRef.current?.requestFullscreen||containerRef.current?.webkitRequestFullscreen)?.call(containerRef.current);
+    else(document.exitFullscreen||document.webkitExitFullscreen)?.call(document);
+  };
+  useEffect(()=>{
+    const h=()=>setFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange",h);
+    document.addEventListener("webkitfullscreenchange",h);
+    return()=>{document.removeEventListener("fullscreenchange",h);document.removeEventListener("webkitfullscreenchange",h);};
+  },[]);
+
+  const loadGoal=useCallback(async()=>{
+    if(!wsId)return;
+    const{data}=await db.from("dashboard_goals").select("meta_valor").eq("workspace_id",wsId).eq("mes",selMonth).maybeSingle();
+    setGoal(data?.meta_valor||0);setGoalInput(String(data?.meta_valor||0));
+  },[wsId,selMonth]);
+
+  const saveGoal=async()=>{
+    if(!wsId)return;setSavingGoal(true);
+    const val=parseFloat(goalInput)||0;
+    const{error}=await db.from("dashboard_goals").upsert({workspace_id:wsId,mes:selMonth,meta_valor:val,created_by:profile?.id},{onConflict:"workspace_id,mes"});
+    if(error)toast("Erro ao salvar meta: "+error.message,"error");
+    else{setGoal(val);setEditGoal(false);toast("Meta salva!");}
+    setSavingGoal(false);
+  };
+
+  const loadData=useCallback(async()=>{
+    setLoading(true);
+    try{
+      const{data:bds}=await db.from("boards").select("id,nome").in("nome",["Vendas","Negociações","Pré - Vendas"]);
+      if(!bds?.length){setLoading(false);return;}
+      setBoards(bds);
+      const boardIds=bds.map(b=>b.id);
+      const{data:allCols}=await db.from("columns").select("id,board_id,nome,tipo,config").in("board_id",boardIds);
+      setCols(allCols||[]);
+
+      // Items do período selecionado
+      let itemQ=db.from("items").select("id,board_id,created_at").in("board_id",boardIds);
+      if(filterMode==="month"&&selMonth){
+        const[y,m]=selMonth.split("-");
+        const start=`${y}-${m}-01T00:00:00.000Z`;
+        const endDate=new Date(parseInt(y),parseInt(m),1);
+        itemQ=itemQ.gte("created_at",start).lt("created_at",endDate.toISOString());
+      }else if(filterMode==="range"&&rangeStart&&rangeEnd){
+        itemQ=itemQ.gte("created_at",rangeStart+"T00:00:00Z").lte("created_at",rangeEnd+"T23:59:59Z");
+      }
+      const{data:items}=await itemQ.order("created_at",{ascending:true});
+
+      // Todos negociações (sem filtro) para proposta na rua
+      const negB=bds.find(b=>b.nome==="Negociações");
+      let allNeg=[];
+      if(negB){const{data:ni}=await db.from("items").select("id,board_id,created_at").eq("board_id",negB.id);allNeg=ni||[];}
+
+      // Últimos 8 meses vendas (para gráfico)
+      const venB=bds.find(b=>b.nome==="Vendas");
+      let allVen=[];
+      if(venB){
+        const dt8=new Date();dt8.setMonth(dt8.getMonth()-7);dt8.setDate(1);dt8.setHours(0,0,0,0);
+        const{data:vi}=await db.from("items").select("id,board_id,created_at").eq("board_id",venB.id).gte("created_at",dt8.toISOString());
+        allVen=vi||[];
+      }
+
+      // Todos pré-vendas (para MQL total)
+      const preB=bds.find(b=>b.nome==="Pré - Vendas");
+      let allPre=[];
+      if(preB){const{data:pi}=await db.from("items").select("id,board_id,created_at").eq("board_id",preB.id);allPre=pi||[];}
+
+      // ── DEDUPLICAR por id antes de salvar ────────────────────────────────
+      const uniqMap=new Map();
+      for(const it of [...(items||[]),...allNeg,...allVen,...allPre]) uniqMap.set(it.id,it);
+      const uniqItems=[...uniqMap.values()];
+      const uniqIds=uniqItems.map(x=>x.id);
+      setRawItems(uniqItems);
+
+      if(uniqIds.length){
+        const chunks=[];for(let i=0;i<uniqIds.length;i+=500)chunks.push(uniqIds.slice(i,i+500));
+        const valsArr=await Promise.all(chunks.map(chunk=>db.from("item_values").select("item_id,column_id,value").in("item_id",chunk)));
+        // Deduplicar item_values por (item_id, column_id) — pega o último
+        const vMap=new Map();
+        for(const v of valsArr.flatMap(r=>r.data||[])) vMap.set(v.item_id+"_"+v.column_id,v);
+        setRawVals([...vMap.values()]);
+      }else setRawVals([]);
+
+      setLastUpdate(new Date());
+    }catch(e){console.error(e);toast("Erro ao carregar dashboard","error");}
+    setLoading(false);
+  },[filterMode,selMonth,rangeStart,rangeEnd]);
+
+  useEffect(()=>{loadData();loadGoal();},[loadData,loadGoal]);
+
+  useEffect(()=>{
+    const ch=db.channel("dash-rt").on("postgres_changes",{event:"*",schema:"public",table:"items"},()=>loadData()).on("postgres_changes",{event:"*",schema:"public",table:"item_values"},()=>loadData()).subscribe();
+    return()=>db.removeChannel(ch);
+  },[loadData]);
+
+  const metrics=useMemo(()=>{
+    if(!boards.length||!cols.length)return{};
+    const gB=nome=>boards.find(b=>b.nome===nome);
+    const gC=(bNome,cNome,tipo)=>cols.find(c=>{const b=gB(bNome);return b&&c.board_id===b.id&&(cNome?c.nome===cNome:true)&&(tipo?c.tipo===tipo:true);});
+
+    // Índice de valores: {itemId: {colId: value}} — acesso O(1), sem buscas repetidas
+    const valIdx={};
+    for(const row of rawVals){
+      if(!valIdx[row.item_id]) valIdx[row.item_id]={};
+      const v=row.value;
+      valIdx[row.item_id][row.column_id]=(v!==null&&v!==undefined&&typeof v==="object"&&"value" in v)?v.value:v;
+    }
+    const gV=(itemId,colId)=>colId?(valIdx[itemId]?.[colId]??null):null;
+
+    // Itens "preenchidos": têm ao menos 1 valor não-nulo no item_values
+    const itemsComValor=new Set(rawVals.filter(r=>r.value!==null&&r.value!==undefined&&r.value!=="").map(r=>r.item_id));
+    const isPreenchido=id=>itemsComValor.has(id);
+
+    const venB=gB("Vendas"),negB=gB("Negociações"),preB=gB("Pré - Vendas");
+    const venValC=gC("Vendas","Valor do Projeto","currency");
+    const venParC=gC("Vendas","Parcelas","number");
+    const negValC=gC("Negociações","Valor do Projeto","currency");
+    const negEtapaC=gC("Negociações","Etapa","status");
+    const negOriC=gC("Negociações","Origem","status");
+    const preMqlC=gC("Pré - Vendas","MQL","status");
+
+    // Função de filtro de período
+    const inPeriod=it=>{
+      if(filterMode==="month"&&selMonth){
+        const[y,m]=selMonth.split("-");
+        const s=new Date(parseInt(y),parseInt(m)-1,1);
+        const e=new Date(parseInt(y),parseInt(m),1);
+        const d=new Date(it.created_at);return d>=s&&d<e;
+      }
+      if(filterMode==="range"&&rangeStart&&rangeEnd){
+        const s=new Date(rangeStart);const e=new Date(rangeEnd+"T23:59:59Z");
+        const d=new Date(it.created_at);return d>=s&&d<=e;
+      }
+      return true;
+    };
+
+    // Conjuntos únicos por board (rawItems já está deduplicado)
+    // Apenas itens com pelo menos 1 valor preenchido
+    const venFilt  = rawItems.filter(i=>i.board_id===venB?.id && inPeriod(i) && isPreenchido(i.id));
+    const negAll   = rawItems.filter(i=>i.board_id===negB?.id && isPreenchido(i.id));   // sem filtro data — proposta na rua
+    const negFilt  = rawItems.filter(i=>i.board_id===negB?.id && inPeriod(i) && isPreenchido(i.id));
+    const preAll   = rawItems.filter(i=>i.board_id===preB?.id && isPreenchido(i.id));   // sem filtro — MQL total
+    const preFilt  = rawItems.filter(i=>i.board_id===preB?.id && inPeriod(i) && isPreenchido(i.id));
+    const venAll8m = rawItems.filter(i=>i.board_id===venB?.id && isPreenchido(i.id));   // sem filtro — gráfico 8 meses
+
+    // ── Métricas financeiras (todas vindas do quadro Vendas) ──────────────────
+    const receitaEfetiva=venFilt.reduce((s,it)=>s+(parseFloat(gV(it.id,venValC?.id))||0),0);
+    const mrr=venFilt.reduce((s,it)=>{
+      const v=parseFloat(gV(it.id,venValC?.id))||0;
+      const p=parseFloat(gV(it.id,venParC?.id))||1;
+      return s+(p>0?v/p:0);
+    },0);
+    // Ticket médio = receita / nº de vendas com valor > 0
+    const venComValor=venFilt.filter(it=>(parseFloat(gV(it.id,venValC?.id))||0)>0);
+    const ticketMedio=venComValor.length>0?receitaEfetiva/venComValor.length:0;
+    // Valor médio fechado = média das vendas no board Vendas (não Negociações)
+    const valMedioFechados=venComValor.length>0?receitaEfetiva/venComValor.length:0;
+
+    // ── Proposta na rua (estado atual, todos, sem filtro data) ────────────────
+    const propostaNaRua=negAll.filter(it=>["Proposta Enviada","Proposta na Rua"].includes(gV(it.id,negEtapaC?.id)||""))
+      .reduce((s,it)=>s+(parseFloat(gV(it.id,negValC?.id))||0),0);
+
+    // ── Negócios fechados em Negociações (para funil) ─────────────────────────
+    const negFechadosItems=negFilt.filter(it=>gV(it.id,negEtapaC?.id)==="Negócio Fechado");
+
+    // ── Etapas ────────────────────────────────────────────────────────────────
+    const etapaOpts=negEtapaC?.config?.options||[];
+    const etapasMap={};
+    // Apenas itens que têm etapa definida
+    negFilt.filter(it=>!!gV(it.id,negEtapaC?.id)).forEach(it=>{
+      const e=gV(it.id,negEtapaC?.id);
+      etapasMap[e]=(etapasMap[e]||0)+1;
+    });
+    const etapasData=etapaOpts.length
+      ?etapaOpts.map(o=>({label:o.label,value:etapasMap[o.label]||0,color:o.color})).filter(x=>x.value>0)
+      :Object.entries(etapasMap).map(([k,v])=>({label:k,value:v,color:"#3145FF"}));
+
+    // ── Origens ───────────────────────────────────────────────────────────────
+    const oriOpts=negOriC?.config?.options||[];
+    const oriMap={};
+    // Apenas itens com origem definida
+    negFilt.filter(it=>!!gV(it.id,negOriC?.id)).forEach(it=>{
+      const o=gV(it.id,negOriC?.id);
+      oriMap[o]=(oriMap[o]||0)+1;
+    });
+    const totalOri=Object.values(oriMap).reduce((s,v)=>s+v,0)||1;
+    const origemData=Object.entries(oriMap).map(([label,value])=>({
+      label,value,pct:Math.round((value/totalOri)*100),
+      color:oriOpts.find(o=>o.label===label)?.color||"#94a3b8"
+    })).sort((a,b)=>b.value-a.value);
+
+    // ── MQL (todos os leads de Pré-Vendas, sem filtro de data) ───────────────
+    let mqlQ=0,mqlDQ=0;
+    preAll.forEach(it=>{
+      const m=gV(it.id,preMqlC?.id);
+      if(m==="Qualificado")mqlQ++;
+      else if(m==="Desqualificado"||m==="Não Qualificado")mqlDQ++;
+    });
+
+    // ── Receita por mês (últimos 8 meses, board Vendas) ───────────────────────
+    const mesMap={};
+    const now=new Date();
+    for(let i=7;i>=0;i--){
+      const d=new Date(now.getFullYear(),now.getMonth()-i,1);
+      const k=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+      mesMap[k]=0;
+    }
+    venAll8m.forEach(it=>{
+      const d=new Date(it.created_at);
+      const k=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+      if(k in mesMap){mesMap[k]+=(parseFloat(gV(it.id,venValC?.id))||0);}
+    });
+    const receitaMesData=Object.entries(mesMap).map(([k,value])=>({label:k.slice(5),fullLabel:k,value,highlight:k===selMonth}));
+
+    // ── Taxa de conversão: Vendas realizadas / Leads Pré-Vendas × 100 ─────────
+    // Definição clara: de cada 100 leads que entraram no Pré-Vendas no período,
+    // quantos viraram uma venda efetiva no board Vendas?
+    const totalLeads=preFilt.length;
+    const taxaConversao=totalLeads>0?(venFilt.length/totalLeads*100):0;
+
+    return{
+      receitaEfetiva,mrr,ticketMedio,valMedioFechados,
+      negFechados:negFechadosItems.length,
+      propostaNaRua,etapasData,origemData,
+      mqlQ,mqlDQ,receitaMesData,
+      totalLeads,taxaConversao,
+      venFiltLen:venFilt.length,
+      negFiltLen:negFilt.length,
+      preAllLen:preAll.length
+    };
+  },[rawItems,rawVals,boards,cols,filterMode,selMonth,rangeStart,rangeEnd]);
+
+  const monthOptions=useMemo(()=>{
+    const opts=[];const now=new Date();
+    for(let i=11;i>=0;i--){const d=new Date(now.getFullYear(),now.getMonth()-i,1);const val=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;const label=d.toLocaleDateString("pt-BR",{month:"short",year:"numeric"}).replace("de ","");opts.push({val,label});}
+    return opts;
+  },[]);
+
+  const canEditGoal=perms?.all||perms?.manageBoards||perms?.editAny||perms?.isFull;
+  const progresso=goal>0?(metrics.receitaEfetiva||0)/goal*100:0;
+  const gridCols=width>=1400?"repeat(4,1fr)":width>=1024?"repeat(3,1fr)":width>=640?"repeat(2,1fr)":"1fr";
+  const chartCols=width>=1200?"repeat(3,1fr)":width>=768?"repeat(2,1fr)":"1fr";
+
+  return(
+    <div ref={containerRef} style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",background:"var(--bg)"}}>
+
+      {/* Header */}
+      <div style={{background:"var(--surface)",borderBottom:"1px solid var(--border)",padding:isMobile?"12px 16px":"14px 24px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",flexShrink:0,zIndex:10}}>
+        {!fullscreen&&<button onClick={onBack} style={{...T.btn,background:"none",border:"1.5px solid var(--border)",color:"var(--text)",padding:"7px 14px",fontSize:12,flexShrink:0}}>← Voltar</button>}
+        <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+          <div style={{fontSize:isMobile?16:18,fontWeight:900,color:"var(--text)"}}>📊 Dashboard</div>
+          {loading&&<Spinner size={15}/>}
+          {!loading&&lastUpdate&&<div style={{fontSize:10,color:"var(--text3)",background:"var(--surface3)",borderRadius:6,padding:"2px 8px"}}>⟳ {lastUpdate.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}</div>}
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",flex:1}}>
+          <div style={{display:"flex",borderRadius:8,overflow:"hidden",border:"1.5px solid var(--border)",flexShrink:0}}>
+            {[["month","Mês"],["range","Período"],["all","Todos"]].map(([mode,lbl])=>(
+              <button key={mode} onClick={()=>setFilterMode(mode)} style={{...T.btn,borderRadius:0,padding:"6px 12px",fontSize:11,background:filterMode===mode?"var(--blue)":"var(--surface)",color:filterMode===mode?"#fff":"var(--text2)"}}>{lbl}</button>
+            ))}
+          </div>
+          {filterMode==="month"&&<select value={selMonth} onChange={e=>setSelMonth(e.target.value)} style={{...T.inp,width:"auto",padding:"7px 10px",fontSize:12,borderRadius:8}}>{monthOptions.map(o=><option key={o.val} value={o.val}>{o.label}</option>)}</select>}
+          {filterMode==="range"&&<div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+            <input type="date" value={rangeStart} onChange={e=>setRangeStart(e.target.value)} style={{...T.inp,width:140,padding:"7px 10px",fontSize:12,borderRadius:8}}/>
+            <span style={{color:"var(--text3)",fontSize:12}}>até</span>
+            <input type="date" value={rangeEnd} onChange={e=>setRangeEnd(e.target.value)} style={{...T.inp,width:140,padding:"7px 10px",fontSize:12,borderRadius:8}}/>
+          </div>}
+        </div>
+        <div style={{display:"flex",gap:8,flexShrink:0}}>
+          <button onClick={loadData} title="Atualizar" style={{...T.btn,background:"var(--surface3)",color:"var(--text2)",padding:"7px 11px",fontSize:14,border:"1px solid var(--border)"}}>↻</button>
+          <button onClick={toggleFS} style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"7px 14px",fontSize:12}}>{fullscreen?"⊠ Sair":"⛶ Tela Cheia"}</button>
+        </div>
+      </div>
+
+      {/* Conteúdo */}
+      <div style={{flex:1,overflowY:"auto",padding:isMobile?"12px":"20px 24px"}}>
+        {loading&&!metrics.receitaEfetiva&&<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:200,gap:12,flexDirection:"column"}}><Spinner size={36}/><span style={{color:"var(--text3)",fontSize:14}}>Carregando dados…</span></div>}
+
+        {/* Meta Mensal */}
+        <div style={{background:"var(--surface)",borderRadius:14,padding:isMobile?"14px":"20px",border:"1px solid var(--border)",boxShadow:"0 2px 12px var(--shadow)",marginBottom:16}}>
+          <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:16}}>
+            <div>
+              <div style={{fontWeight:900,fontSize:isMobile?15:18,color:"var(--text)"}}>🎯 Meta Mensal</div>
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>{filterMode==="month"?monthOptions.find(m=>m.val===selMonth)?.label||selMonth:"Período selecionado"}</div>
+            </div>
+            <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+              {canEditGoal&&!editGoal&&<button onClick={()=>{setEditGoal(true);setGoalInput(String(goal));}} style={{...T.btn,background:"var(--surface3)",color:"var(--text2)",padding:"7px 14px",fontSize:12,border:"1px solid var(--border)"}}>{goal>0?"✏️ Editar meta":"+ Definir meta"}</button>}
+              {editGoal&&<div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                <div style={{position:"relative"}}>
+                  <span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",color:"var(--text3)",fontSize:13}}>R$</span>
+                  <input type="number" value={goalInput} onChange={e=>setGoalInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveGoal();if(e.key==="Escape")setEditGoal(false);}} style={{...T.inp,width:160,paddingLeft:28}} autoFocus placeholder="0,00"/>
+                </div>
+                <button onClick={saveGoal} disabled={savingGoal} style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"8px 16px",fontSize:12}}>{savingGoal?"…":"Salvar"}</button>
+                <button onClick={()=>setEditGoal(false)} style={{...T.btn,background:"var(--surface3)",color:"var(--text2)",padding:"8px 14px",fontSize:12,border:"1px solid var(--border)"}}>Cancelar</button>
+              </div>}
+            </div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr 1fr":"repeat(4,1fr)",gap:12,marginBottom:goal>0?16:0}}>
+            {[
+              {lbl:"Receita Efetiva",val:fmtBRL(metrics.receitaEfetiva||0),clr:"#059669"},
+              {lbl:"Meta",val:goal>0?fmtBRL(goal):"—",clr:"var(--text)"},
+              {lbl:"Restante",val:goal>0?fmtBRL(Math.max(goal-(metrics.receitaEfetiva||0),0)):"—",clr:goal>0&&(metrics.receitaEfetiva||0)>=goal?"#059669":"#dc2626"},
+              {lbl:"Atingimento",val:goal>0?`${Math.round(progresso)}%`:"—",clr:progresso>=100?"#059669":progresso>=70?"#d97706":"#dc2626"},
+            ].map((item,i)=>(
+              <div key={i}>
+                <div style={{fontSize:10,fontWeight:700,color:"var(--text3)",textTransform:"uppercase",letterSpacing:.5,marginBottom:4}}>{item.lbl}</div>
+                <div style={{fontSize:isMobile?18:24,fontWeight:900,color:item.clr}}>{item.val}</div>
+              </div>
+            ))}
+          </div>
+          {goal>0&&<div>
+            <div style={{height:10,background:"var(--surface3)",borderRadius:5,overflow:"hidden",marginBottom:6}}>
+              <div style={{height:"100%",width:`${Math.min(progresso,100)}%`,background:progresso>=100?"#059669":progresso>=70?"#d97706":"var(--blue)",borderRadius:5,transition:"width .6s ease"}}/>
+            </div>
+            <div style={{fontSize:11,color:"var(--text3)"}}>{progresso>=100?"🎉 Meta atingida!":progresso>=70?`Quase lá — faltam ${fmtBRL(goal-(metrics.receitaEfetiva||0))}`:`${Math.round(100-progresso)}% abaixo da meta`}</div>
+          </div>}
+        </div>
+
+        {/* KPIs */}
+        <div style={{display:"grid",gridTemplateColumns:gridCols,gap:12,marginBottom:16}}>
+          <KpiCard title="MRR" value={fmtBRL(metrics.mrr||0)} icon="🔄" color="#059669" sub="Média recorrente mensal"/>
+          <KpiCard title="Proposta na Rua" value={fmtBRL(metrics.propostaNaRua||0)} icon="📤" color="#d97706" sub="Propostas em aberto (total)" badge={{label:"Ativo",color:"#d97706",bg:"#d9770620"}}/>
+          <KpiCard title="Ticket Médio" value={fmtBRL(metrics.ticketMedio||0)} icon="💰" color="#7c3aed" sub={`${metrics.venFiltLen||0} vendas no período`}/>
+          <KpiCard title="Valor Médio Fechado" value={fmtBRL(metrics.valMedioFechados||0)} icon="🤝" color="#0891b2" sub={`${metrics.negFechados||0} negócios fechados`}/>
+          <KpiCard title="Total Leads" value={metrics.totalLeads||0} icon="👥" color="#3145FF" sub="Pré-Vendas no período"/>
+          <KpiCard title="Taxa de Conversão" value={`${(metrics.taxaConversao||0).toFixed(1)}%`} icon="📈" color="#059669" sub="Leads → Negócio Fechado"/>
+          <KpiCard title="MQL Qualificados" value={metrics.mqlQ||0} icon="✅" color="#059669" sub={`De ${(metrics.mqlQ||0)+(metrics.mqlDQ||0)} avaliados`} progress={(metrics.mqlQ||0)+(metrics.mqlDQ||0)>0?((metrics.mqlQ||0)/((metrics.mqlQ||0)+(metrics.mqlDQ||0)))*100:null}/>
+          <KpiCard title="Negócios Fechados" value={metrics.negFechados||0} icon="🏆" color="#059669" sub="Negociações no período"/>
+        </div>
+
+        {/* Gráficos linha 1 */}
+        <div style={{display:"grid",gridTemplateColumns:chartCols,gap:16,marginBottom:16}}>
+
+          <ChartCard title="📅 Receita por Mês" subtitle="Últimos 8 meses — Vendas">
+            {(metrics.receitaMesData||[]).length>0?(
+              <><BarChartSVG data={metrics.receitaMesData||[]} color="var(--blue)" height={90}/>
+                <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:4}}>
+                  {(metrics.receitaMesData||[]).filter(d=>d.value>0).slice(-4).map((d,i)=>(
+                    <div key={i} style={{fontSize:10,color:"var(--text3)",background:"var(--surface3)",borderRadius:6,padding:"3px 8px"}}>
+                      <strong>{d.label}:</strong> {fmtBRL(d.value)}
+                    </div>
+                  ))}
+                </div>
+              </>
+            ):<div style={{color:"var(--text3)",fontSize:13,textAlign:"center",padding:"20px 0"}}>Sem dados</div>}
+          </ChartCard>
+
+          <ChartCard title="🌐 Origens de Lead" subtitle="Negociações — distribuição">
+            {(metrics.origemData||[]).length>0?(
+              <div style={{display:"flex",gap:12,alignItems:"flex-start",flexWrap:"wrap"}}>
+                <DonutSVG segments={metrics.origemData||[]} size={isMobile?90:110}/>
+                <div style={{flex:1,display:"flex",flexDirection:"column",gap:5,minWidth:0}}>
+                  {(metrics.origemData||[]).slice(0,7).map((s,i)=>(
+                    <div key={i} style={{display:"flex",alignItems:"center",gap:7}}>
+                      <div style={{width:9,height:9,borderRadius:2,background:s.color,flexShrink:0}}/>
+                      <div style={{fontSize:11,color:"var(--text2)",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.label}</div>
+                      <div style={{fontSize:11,fontWeight:700,color:"var(--text)",flexShrink:0}}>{s.pct}%</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ):<div style={{color:"var(--text3)",fontSize:13,textAlign:"center",padding:"20px 0"}}>Sem dados de origem</div>}
+          </ChartCard>
+
+          <ChartCard title="🔄 Etapas — Negociações" subtitle="Leads por etapa no período">
+            {(metrics.etapasData||[]).length>0?<HBarSVG items={metrics.etapasData||[]}/>:<div style={{color:"var(--text3)",fontSize:13,textAlign:"center",padding:"20px 0"}}>Sem dados de etapas</div>}
+          </ChartCard>
+
+        </div>
+
+        {/* Gráficos linha 2 */}
+        <div style={{display:"grid",gridTemplateColumns:width>=1024?"repeat(2,1fr)":"1fr",gap:16,marginBottom:16}}>
+
+          <ChartCard title="🎯 MQL — Qualificação (Pré-Vendas)" subtitle="Todos os leads avaliados">
+            <div style={{display:"flex",alignItems:"center",gap:20,flexWrap:"wrap"}}>
+              <DonutSVG segments={[
+                {label:"Qualificado",value:metrics.mqlQ||0,color:"#059669"},
+                {label:"Desqualificado",value:metrics.mqlDQ||0,color:"#dc2626"},
+                {label:"Sem avaliação",value:Math.max((metrics.preAllLen||0)-(metrics.mqlQ||0)-(metrics.mqlDQ||0),0),color:"var(--border)"}
+              ]} size={100}/>
+              <div style={{flex:1,display:"flex",flexDirection:"column",gap:10,minWidth:0}}>
+                {[{label:"Qualificados",value:metrics.mqlQ||0,color:"#059669"},{label:"Desqualificados",value:metrics.mqlDQ||0,color:"#dc2626"},{label:"Sem avaliação",value:Math.max((metrics.preAllLen||0)-(metrics.mqlQ||0)-(metrics.mqlDQ||0),0),color:"var(--border)"}].map((row,i)=>(
+                  <div key={i} style={{display:"flex",alignItems:"center",gap:10}}>
+                    <div style={{width:10,height:10,borderRadius:"50%",background:row.color,flexShrink:0}}/>
+                    <div style={{flex:1,fontSize:12,color:"var(--text2)"}}>{row.label}</div>
+                    <div style={{fontSize:14,fontWeight:800,color:"var(--text)"}}>{row.value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </ChartCard>
+
+          <ChartCard title="🔽 Funil de Conversão" subtitle="Leads → Vendas no período">
+            {(()=>{
+              const preB2=boards.find(b=>b.nome==="Pré - Vendas");
+              const negB2=boards.find(b=>b.nome==="Negociações");
+              const venB2=boards.find(b=>b.nome==="Vendas");
+              const inPeriod=item=>{
+                if(filterMode==="month"&&selMonth){const[y,m]=selMonth.split("-");const s=new Date(parseInt(y),parseInt(m)-1,1);const e=new Date(parseInt(y),parseInt(m),1);const d=new Date(item.created_at);return d>=s&&d<e;}
+                if(filterMode==="range"&&rangeStart&&rangeEnd){const s=new Date(rangeStart);const e=new Date(rangeEnd+"T23:59:59Z");const d=new Date(item.created_at);return d>=s&&d<=e;}
+                return true;
+              };
+              const steps=[
+                {label:"Pré-Vendas (Leads)",value:rawItems.filter(i=>i.board_id===preB2?.id&&inPeriod(i)).length,color:"#3145FF"},
+                {label:"Negociações",value:rawItems.filter(i=>i.board_id===negB2?.id&&inPeriod(i)).length,color:"#7c3aed"},
+                {label:"Negócio Fechado",value:metrics.negFechados||0,color:"#059669"},
+                {label:"Vendas Realizadas",value:rawItems.filter(i=>i.board_id===venB2?.id&&inPeriod(i)).length,color:"#0891b2"},
+              ];
+              const maxV=Math.max(...steps.map(s=>s.value),1);
+              return(
+                <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                  {steps.map((step,i)=>(
+                    <div key={i} style={{display:"flex",alignItems:"center",gap:10}}>
+                      <div style={{width:20,height:20,borderRadius:6,background:step.color,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"#fff",fontWeight:800}}>{i+1}</div>
+                      <div style={{flex:1}}>
+                        <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+                          <span style={{fontSize:11,color:"var(--text2)"}}>{step.label}</span>
+                          <span style={{fontSize:12,fontWeight:800,color:"var(--text)"}}>{step.value}</span>
+                        </div>
+                        <div style={{height:10,background:"var(--surface3)",borderRadius:4,overflow:"hidden"}}>
+                          <div style={{height:"100%",width:`${(step.value/maxV)*100}%`,background:step.color,borderRadius:4,transition:"width .5s ease"}}/>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </ChartCard>
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // APP CONTENT
 // ─────────────────────────────────────────────────────────────────────────────
 function AppContent() {
@@ -3208,7 +3795,7 @@ function AppContent() {
   const toast=useToast();
   const {isMobile}=useBreakpoint();
   const [authPage,setAuthPage]=useState("login");
-  const [page,setPage]=useState("board"); // "board"|"profile"|"admin"
+  const [page,setPage]=useState("board"); // "board"|"profile"|"admin"|"dashboard"
   const [boards,setBoards]=useState([]);
   const [boardId,setBoardId]=useState(null);
   const [allUsers,setAllUsers]=useState([]);
@@ -3363,6 +3950,7 @@ function AppContent() {
       onDuplicateBoard={b=>perms.manageBoards&&duplicateBoard(b)}
       onProfile={()=>setPage("profile")}
       onAdmin={()=>setPage("admin")}
+      onDashboard={()=>setPage("dashboard")}
       onLogout={signOut}
       open={sidebarOpen} onClose={()=>setSidebarOpen(false)}
     />
@@ -3377,7 +3965,7 @@ function AppContent() {
         {isMobile&&<div style={{background:"var(--surface)",borderBottom:"1px solid var(--border)",padding:"0 16px",height:52,display:"flex",alignItems:"center",gap:12,flexShrink:0}}>
           <button onClick={()=>setSidebarOpen(true)} style={{background:"none",border:"none",cursor:"pointer",fontSize:22,color:"var(--text)",lineHeight:1}}>☰</button>
           <div style={{fontWeight:800,fontSize:15,color:"var(--text)",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-            {boards.find(b=>b.id===boardId)?.icon||"📋"} {boards.find(b=>b.id===boardId)?.nome||"CRM"}
+            {page==="dashboard"?"📊 Dashboard":page==="profile"?"👤 Perfil":page==="admin"?"⚙️ Admin":(boards.find(b=>b.id===boardId)?.icon||"📋")+" "+(boards.find(b=>b.id===boardId)?.nome||"CRM")}
           </div>
         </div>}
         {page==="profile"&&<ProfilePage onBack={()=>setPage("board")}/>}
@@ -3389,6 +3977,9 @@ function AppContent() {
               <button onClick={()=>setPage("board")} style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"9px 20px",marginTop:8}}>Voltar</button>
             </div>
         }
+        {page==="dashboard"&&(
+          <DashboardPage onBack={()=>setPage("board")} wsId={wsId} allUsers={allUsers} perms={perms} profile={profile}/>
+        )}
         {page==="board"&&(
           <BoardView key={boardId} boardId={boardId} boards={visibleBoards} allUsers={allUsers}
             currentUser={profile} wsId={wsId} perms={perms} onBoardCountChange={bumpCount}/>
