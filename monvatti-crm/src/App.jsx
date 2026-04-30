@@ -1313,6 +1313,65 @@ function ItemCard({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete}) 
   );
 }
 
+// ── Linha de totais do grupo ───────────────────────────────────────────────────
+function GroupTotals({columns,items,gc}) {
+  // Descobre quais colunas têm soma relevante
+  const summable=columns.filter(c=>c.tipo==="currency"||c.tipo==="number");
+  if(!summable.length||!items.length) return null;
+
+  // Filtra itens preenchidos (têm pelo menos um valor não-nulo)
+  const preenchidos=items.filter(it=>{
+    const vals=it.values||{};
+    return Object.values(vals).some(v=>v!==null&&v!==undefined&&v!=="");
+  });
+  if(!preenchidos.length) return null;
+
+  // Calcula soma e conta por coluna
+  const totals=summable.map(col=>{
+    const vals=preenchidos.map(it=>{
+      const raw=it.values?.[col.id];
+      if(raw===null||raw===undefined||raw==="") return 0;
+      const v=typeof raw==="object"&&raw!==null&&"value" in raw?raw.value:raw;
+      return parseFloat(v)||0;
+    });
+    const soma=vals.reduce((s,v)=>s+v,0);
+    const count=vals.filter(v=>v>0).length;
+    return {col,soma,count};
+  }).filter(t=>t.soma>0||t.count>0);
+
+  if(!totals.length) return null;
+
+  return (
+    <div style={{
+      borderLeft:`3px solid ${gc}`,
+      background:`${gc}08`,
+      borderTop:`1.5px dashed ${gc}30`,
+      padding:"10px 14px 11px",
+      display:"flex",flexWrap:"wrap",alignItems:"center",gap:0
+    }}>
+      <div style={{fontSize:10,fontWeight:800,color:gc,textTransform:"uppercase",
+        letterSpacing:.7,marginRight:16,opacity:.8,flexShrink:0,paddingRight:16,
+        borderRight:`1px solid ${gc}30`}}>
+        Σ Totais
+      </div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:"8px 20px",flex:1}}>
+        {totals.map(({col,soma,count})=>(
+          <div key={col.id} style={{display:"flex",alignItems:"center",gap:6}}>
+            <span style={{fontSize:10,color:"var(--text3)",fontWeight:600}}>{col.nome}:</span>
+            <span style={{fontSize:13,fontWeight:800,color:"var(--text)"}}>
+              {col.tipo==="currency"?fmtBRL(soma):soma.toLocaleString("pt-BR",{maximumFractionDigits:2})}
+            </span>
+            {count>0&&<span style={{fontSize:10,color:"var(--text3)",background:"var(--surface3)",
+              borderRadius:10,padding:"1px 6px"}}>
+              {count} item{count!==1?"s":""}
+            </span>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // GROUP
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1373,6 +1432,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                 />
               ))}
               {!items.length&&<div style={{padding:"12px 16px",color:"var(--text3)",fontSize:13}}>Nenhum item</div>}
+              <GroupTotals columns={columns} items={items} gc={group.color}/>
               <button onClick={onAddItem} style={{...T.btn,padding:"10px 16px",color:"var(--text3)",background:"none",width:"100%",justifyContent:"flex-start"}}>
                 + Adicionar item
               </button>
@@ -1416,6 +1476,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                 </tbody>
               </table>
               {!items.length&&<div style={{padding:"14px 56px",color:"var(--text3)",fontSize:13,borderLeft:`3px solid ${group.color}`}}>Nenhum item</div>}
+              <GroupTotals columns={columns} items={items} gc={group.color}/>
               <div style={{borderLeft:`3px solid ${group.color}`,background:"var(--surface)"}}>
                 <button onClick={onAddItem} style={{display:"flex",alignItems:"center",gap:7,padding:"10px 18px",
                   background:"none",border:"none",cursor:"pointer",color:"var(--text3)",fontSize:13}}>
@@ -2087,26 +2148,44 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
   return (
     <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
       {/* Top bar */}
-      <div style={{background:"var(--surface)",borderBottom:"1.5px solid var(--border)",padding:"0 16px",
-        display:"flex",alignItems:"center",gap:10,height:58,flexShrink:0,flexWrap:"wrap"}}>
-        <div style={{fontSize:17,fontWeight:900,color:"var(--text)",letterSpacing:-.4,flex:1,minWidth:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+      <div style={{background:"var(--surface)",borderBottom:"1.5px solid var(--border)",
+        padding:isMobile?"10px 12px":"0 16px",
+        display:"flex",alignItems:"center",gap:8,minHeight:58,flexShrink:0,
+        flexWrap:isMobile?"wrap":"nowrap"}}>
+        <div style={{fontSize:isMobile?15:17,fontWeight:900,color:"var(--text)",letterSpacing:-.4,
+          flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
           {board.icon||"📋"} {board.nome}
         </div>
-        {!isMobile&&<input placeholder="🔍 Buscar…" value={search} onChange={e=>setSearch(e.target.value)}
-          style={{border:`1.5px solid ${search?"var(--blue)":"var(--border)"}`,borderRadius:8,padding:"7px 12px",
-            fontSize:13,width:190,outline:"none",background:"var(--surface2)",color:"var(--text)"}}/>}
-        <button onClick={()=>setShowFilters(p=>!p)}
-          style={{...T.btn,background:filterCount>0?"var(--blue)":"var(--surface3)",color:filterCount>0?"#fff":"var(--text2)",padding:"8px 13px",fontSize:12}}>
-          ⚙ {filterCount>0?`(${filterCount})`:"Filtros"}
-        </button>
-        {!isMobile&&perms.manageCols&&<button onClick={()=>setShowColMgr(true)} style={{...T.btn,background:"var(--surface3)",color:"var(--text2)",padding:"8px 13px",fontSize:12}}>⊞ Colunas</button>}
-        {perms.export&&<button onClick={()=>setShowExport(true)} style={{...T.btn,background:"var(--surface3)",color:"var(--text2)",padding:"8px 13px",fontSize:12}}>📥 Exportar</button>}
-        {perms.createGroups&&<button onClick={()=>setGroupCreateM(true)} style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"8px 16px",fontSize:12}}>+ Grupo</button>}
+        {/* Em mobile: linha 1 tem título + botões ícone compactos */}
+        {isMobile&&(
+          <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
+            <button onClick={()=>setShowFilters(p=>!p)}
+              style={{...T.btn,background:filterCount>0?"var(--blue)":"var(--surface3)",color:filterCount>0?"#fff":"var(--text2)",padding:"7px 10px",fontSize:13,minWidth:0}}>
+              {filterCount>0?`⚙ (${filterCount})`:"⚙"}
+            </button>
+            {perms.export&&<button onClick={()=>setShowExport(true)} style={{...T.btn,background:"var(--surface3)",color:"var(--text2)",padding:"7px 10px",fontSize:13}}>📥</button>}
+            {perms.createGroups&&<button onClick={()=>setGroupCreateM(true)} style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"7px 12px",fontSize:12}}>+ Grupo</button>}
+          </div>
+        )}
+        {/* Em desktop: botões normais */}
+        {!isMobile&&<>
+          <input placeholder="🔍 Buscar…" value={search} onChange={e=>setSearch(e.target.value)}
+            style={{border:`1.5px solid ${search?"var(--blue)":"var(--border)"}`,borderRadius:8,padding:"7px 12px",
+              fontSize:13,width:190,outline:"none",background:"var(--surface2)",color:"var(--text)"}}/>
+          <button onClick={()=>setShowFilters(p=>!p)}
+            style={{...T.btn,background:filterCount>0?"var(--blue)":"var(--surface3)",color:filterCount>0?"#fff":"var(--text2)",padding:"8px 13px",fontSize:12}}>
+            ⚙ {filterCount>0?`(${filterCount})`:"Filtros"}
+          </button>
+          {perms.manageCols&&<button onClick={()=>setShowColMgr(true)} style={{...T.btn,background:"var(--surface3)",color:"var(--text2)",padding:"8px 13px",fontSize:12}}>⊞ Colunas</button>}
+          {perms.export&&<button onClick={()=>setShowExport(true)} style={{...T.btn,background:"var(--surface3)",color:"var(--text2)",padding:"8px 13px",fontSize:12}}>📥 Exportar</button>}
+          {perms.createGroups&&<button onClick={()=>setGroupCreateM(true)} style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"8px 16px",fontSize:12}}>+ Grupo</button>}
+        </>}
+        {/* Em mobile: linha 2 com busca full-width */}
+        {isMobile&&<div style={{width:"100%",paddingTop:4}}>
+          <input placeholder="🔍 Buscar…" value={search} onChange={e=>setSearch(e.target.value)}
+            style={{...T.inp,padding:"8px 12px",fontSize:13}}/>
+        </div>}
       </div>
-      {isMobile&&<div style={{padding:"8px 16px",borderBottom:"1px solid var(--border)",background:"var(--surface)"}}>
-        <input placeholder="🔍 Buscar…" value={search} onChange={e=>setSearch(e.target.value)}
-          style={{...T.inp,padding:"8px 12px",fontSize:13}}/>
-      </div>}
 
       {/* Content */}
       <div style={{flex:1,overflowY:"auto",padding:isMobile?"8px 12px 120px":"8px 22px 120px"}}>
