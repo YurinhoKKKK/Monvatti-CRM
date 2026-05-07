@@ -147,7 +147,14 @@ const CTYPES = [
 // ─── UTILS ───────────────────────────────────────────────────────────────────
 const deep   = x => JSON.parse(JSON.stringify(x));
 const fmtBRL = n => `R$ ${Number(n).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
-const fmtDate = d => d ? new Date(d).toLocaleDateString("pt-BR") : "";
+const fmtDate = d => {
+  if(!d) return "";
+  // Datas no formato YYYY-MM-DD sem horário são tratadas como UTC midnight
+  // o que causa -1 dia em fusos negativos. Forçamos noon local para evitar isso.
+  const s = String(d);
+  const date = s.length===10 ? new Date(s+"T12:00:00") : new Date(s);
+  return date.toLocaleDateString("pt-BR");
+};
 const uColor  = u => {
   const p=["#3145FF","#0F7B6C","#B5451B","#7B2D8B","#1565C0","#d97706","#059669","#e11d48","#0891b2"];
   return p[((u?.nome||u?.email||"x").charCodeAt(0))%p.length];
@@ -297,17 +304,21 @@ const useToast = ()=>useContext(ToastCtx);
 // ─────────────────────────────────────────────────────────────────────────────
 // PORTAL DROPDOWN — FIX para células status/user não clicáveis em tabelas
 // ─────────────────────────────────────────────────────────────────────────────
-function PortalDrop({trigger, children, minWidth=220}) {
+function PortalDrop({trigger, children, minWidth=220, maxHeight=320}) {
   const [open,setOpen] = useState(false);
-  const [pos,setPos]   = useState({top:0,left:0});
+  const [pos,setPos]   = useState({top:0,left:0,showAbove:false});
   const trigRef = useRef();
   const dropRef = useRef();
 
   const openDrop = ()=>{
     if(trigRef.current){
       const r = trigRef.current.getBoundingClientRect();
-      const left = Math.min(r.left, window.innerWidth-minWidth-8);
-      setPos({top:r.bottom+4, left});
+      const spaceBelow = window.innerHeight - r.bottom - 8;
+      const spaceAbove = r.top - 8;
+      const showAbove  = spaceBelow < Math.min(maxHeight, 200) && spaceAbove > spaceBelow;
+      // Garante que não sai horizontalmente
+      const left = Math.max(8, Math.min(r.left, window.innerWidth - minWidth - 8));
+      setPos({top: r.bottom + 4, bottom: window.innerHeight - r.top + 4, left, showAbove});
     }
     setOpen(p=>!p);
   };
@@ -322,15 +333,38 @@ function PortalDrop({trigger, children, minWidth=220}) {
     return()=>{clearTimeout(t);document.removeEventListener("mousedown",h);};
   },[open]);
 
+  // Após render do dropdown, corrige posição se ainda sair da tela
+  useEffect(()=>{
+    if(!open||!dropRef.current) return;
+    const dr = dropRef.current.getBoundingClientRect();
+    if(dr.right > window.innerWidth - 8){
+      setPos(p=>({...p,left:Math.max(8,window.innerWidth-dr.width-8)}));
+    }
+    if(!pos.showAbove && dr.bottom > window.innerHeight - 8){
+      setPos(p=>({...p,showAbove:true}));
+    }
+  },[open]);
+
   return (
     <>
       <div ref={trigRef} onClick={openDrop} style={{cursor:"pointer"}}>
         {trigger}
       </div>
       {open && createPortal(
-        <div ref={dropRef} style={{position:"fixed",top:pos.top,left:pos.left,zIndex:9999,
-          background:"var(--surface)",border:"1px solid var(--border)",borderRadius:12,
-          boxShadow:"0 12px 48px var(--shadowMd)",minWidth,padding:8,}}>
+        <div ref={dropRef} style={{
+          position:"fixed",
+          ...(pos.showAbove ? {bottom:pos.bottom,top:"auto"} : {top:pos.top}),
+          left:pos.left,
+          zIndex:9999,
+          background:"var(--surface)",
+          border:"1px solid var(--border)",
+          borderRadius:12,
+          boxShadow:"0 12px 48px var(--shadowMd)",
+          minWidth,
+          maxHeight,
+          overflowY:"auto",
+          padding:8,
+        }}>
           {children(()=>setOpen(false))}
         </div>,
         document.body
@@ -486,6 +520,9 @@ function CurrencyCell({value,onChange}) {
 function StatusCell({value,options=[],onChange}) {
   const resolved = useMemo(()=>resolveOpts(options),[options]);
   const current  = resolved.find(o=>o.label===value)||null;
+  // Grid quando há muitas opções (>= 5)
+  const useGrid  = resolved.length >= 5;
+  const minW     = useGrid ? Math.min(480, Math.max(280, resolved.length * 48)) : 220;
 
   const trigger = (
     <div style={{padding:"5px 4px",userSelect:"none",minWidth:120}}>
@@ -498,28 +535,44 @@ function StatusCell({value,options=[],onChange}) {
   );
   if(!resolved.length) return trigger;
   return (
-    <PortalDrop trigger={trigger} minWidth={220}>
+    <PortalDrop trigger={trigger} minWidth={minW} maxHeight={400}>
       {close=>(
         <>
-          <div style={{maxHeight:300,overflowY:"auto"}}>
-            {resolved.map(opt=>(
-              <div key={opt.id} onClick={()=>{onChange(opt.label);close();}}
-                style={{padding:"8px 12px",borderRadius:7,cursor:"pointer",display:"flex",alignItems:"center",
-                  gap:9,marginBottom:2,background:value===opt.label?"var(--surface3)":"transparent"}}
-                onMouseEnter={e=>e.currentTarget.style.background="var(--surface3)"}
-                onMouseLeave={e=>e.currentTarget.style.background=value===opt.label?"var(--surface3)":"transparent"}>
-                <Badge value={opt.label} color={opt.color}/>
-                {value===opt.label&&<span style={{marginLeft:"auto",color:"var(--blue)",fontSize:15}}>✓</span>}
+          {useGrid
+            ? <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:5,padding:4}}>
+                {resolved.map(opt=>(
+                  <div key={opt.id} onClick={()=>{onChange(opt.label);close();}}
+                    style={{padding:"8px 10px",borderRadius:8,cursor:"pointer",display:"flex",alignItems:"center",
+                      gap:7,background:value===opt.label?"var(--surface3)":"transparent",
+                      border:value===opt.label?`1.5px solid ${opt.color}40`:"1.5px solid transparent",transition:"all .1s"}}
+                    onMouseEnter={e=>e.currentTarget.style.background="var(--surface3)"}
+                    onMouseLeave={e=>e.currentTarget.style.background=value===opt.label?"var(--surface3)":"transparent"}>
+                    <div style={{width:8,height:8,borderRadius:"50%",background:opt.color,flexShrink:0}}/>
+                    <span style={{fontSize:11,fontWeight:600,color:"var(--text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{opt.label}</span>
+                    {value===opt.label&&<span style={{marginLeft:"auto",color:opt.color,fontSize:13,flexShrink:0}}>✓</span>}
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            : <div>
+                {resolved.map(opt=>(
+                  <div key={opt.id} onClick={()=>{onChange(opt.label);close();}}
+                    style={{padding:"8px 12px",borderRadius:7,cursor:"pointer",display:"flex",alignItems:"center",
+                      gap:9,marginBottom:2,background:value===opt.label?"var(--surface3)":"transparent"}}
+                    onMouseEnter={e=>e.currentTarget.style.background="var(--surface3)"}
+                    onMouseLeave={e=>e.currentTarget.style.background=value===opt.label?"var(--surface3)":"transparent"}>
+                    <Badge value={opt.label} color={opt.color}/>
+                    {value===opt.label&&<span style={{marginLeft:"auto",color:"var(--blue)",fontSize:15}}>✓</span>}
+                  </div>
+                ))}
+              </div>
+          }
           {value&&<>
             <div style={{height:1,background:"var(--border)",margin:"5px 0"}}/>
             <div onClick={()=>{onChange(null);close();}}
               style={{padding:"8px 12px",borderRadius:7,cursor:"pointer",color:"var(--text3)",fontSize:12}}
               onMouseEnter={e=>e.currentTarget.style.background="var(--surface3)"}
               onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-              Limpar seleção
+              ✕ Limpar seleção
             </div>
           </>}
         </>
@@ -542,22 +595,23 @@ function UserCell({value=[],allUsers=[],onChange}) {
     </div>
   );
   return (
-    <PortalDrop trigger={trigger} minWidth={240}>
+    <PortalDrop trigger={trigger} minWidth={260} maxHeight={380}>
       {close=>(
         <>
           {!allUsers.length&&<div style={{padding:"12px 14px",fontSize:13,color:"var(--text3)"}}>Nenhum usuário</div>}
           {allUsers.map(u=>(
             <div key={u.id} onClick={()=>toggle(u.id)}
               style={{display:"flex",alignItems:"center",gap:11,padding:"9px 13px",borderRadius:8,cursor:"pointer",
-                background:cur.includes(u.id)?"var(--surface3)":"transparent"}}
+                background:cur.includes(u.id)?"var(--surface3)":"transparent",
+                border:cur.includes(u.id)?"1px solid var(--blue)30":"1px solid transparent"}}
               onMouseEnter={e=>e.currentTarget.style.background="var(--surface3)"}
               onMouseLeave={e=>e.currentTarget.style.background=cur.includes(u.id)?"var(--surface3)":"transparent"}>
               <Avatar user={u} size={32}/>
-              <div>
-                <div style={{fontSize:13,fontWeight:600,color:"var(--text)"}}>{u.nome}</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13,fontWeight:600,color:"var(--text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.nome}</div>
                 <div style={{fontSize:11,color:"var(--text3)"}}>{u.funcao||u.email}</div>
               </div>
-              {cur.includes(u.id)&&<span style={{marginLeft:"auto",color:"var(--blue)",fontWeight:700}}>✓</span>}
+              {cur.includes(u.id)&&<span style={{color:"var(--blue)",fontWeight:700,flexShrink:0}}>✓</span>}
             </div>
           ))}
         </>
@@ -590,6 +644,25 @@ function LinkCell({value,onChange}) {
       style={{border:"2px solid var(--blue)",borderRadius:5,padding:"4px 8px",fontSize:13,outline:"none",width:"100%",boxSizing:"border-box",background:"var(--surface)",color:"var(--text)"}}
     />
   );
+}
+
+// Torna links clicáveis no HTML das atualizações
+function linkifyHTML(html) {
+  if(!html) return "";
+  // 1. Garante target=_blank em <a> já existentes
+  let out = html.replace(/<a(\s)/gi,'<a target="_blank" rel="noopener noreferrer"$1');
+  // Wrapper para criar link
+  const mkLink = (url, display, href) =>
+    `<a href="${href||url}" target="_blank" rel="noopener noreferrer" style="color:var(--blue);text-decoration:underline;word-break:break-all">${display||url}</a>`;
+  // 2. https:// ou http:// (já dentro de href="" ignora — lookbehind de ="  ou href)
+  out = out.replace(/(?<![="'\/])(https?:\/\/[^\s<>"']+)/g, url=>mkLink(url));
+  // 3. www. sem protocolo
+  out = out.replace(/(?<![="'\/\w])(www\.[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}[^\s<>"']*)/g,
+    url=>mkLink(url, url, "https://"+url));
+  // 4. Domínios comuns sem www nem protocolo (ex: youtube.com, google.com.br)
+  out = out.replace(/(?<![="'\/\w.])((?:[a-zA-Z0-9-]+\.)+(?:com\.br|com|net|org|io|app|dev|co|me|tv|info|biz|store|shop|edu|gov|br)(?:\/[^\s<>"']*)?)/g,
+    url=>mkLink(url, url, "https://"+url));
+  return out;
 }
 
 // FIX: detecta colunas currency/number dinamicamente
@@ -1246,9 +1319,13 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
     <tr draggable onDragStart={onDragStart} onDragOver={onDragOver} onDrop={onDrop}
       onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}
       style={{background:rowBg,transition:"background .1s"}}>
-      <td style={{width:40,textAlign:"center",borderLeft:`3px solid ${gc}`,verticalAlign:"middle",padding:"0 4px",flexShrink:0}}>
-        <input type="checkbox" checked={selected} onChange={onToggle}
-          style={{cursor:"pointer",accentColor:"var(--blue)",width:15,height:15}}/>
+      <td style={{width:52,textAlign:"center",borderLeft:`3px solid ${gc}`,verticalAlign:"middle",padding:"0 6px",flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
+          <button onClick={onOpen} title="Atualizações"
+            style={{...T.iBtn,opacity:hov||selected?1:0.25,transition:"opacity .15s",fontSize:13,padding:"2px 3px",flexShrink:0}}>📝</button>
+          <input type="checkbox" checked={selected} onChange={onToggle}
+            style={{cursor:"pointer",accentColor:"var(--blue)",width:13,height:13,flexShrink:0}}/>
+        </div>
       </td>
       {columns.map(col=>(
         <td key={col.id} style={{padding:"2px 3px",borderRight:"1px solid var(--border)",verticalAlign:"middle",maxWidth:220}}>
@@ -1257,9 +1334,8 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
             onChange={v=>onUpdateValue(col.id,v)} onRespChange={onRespChange}/>
         </td>
       ))}
-      <td style={{width:90,padding:"0 8px",textAlign:"right",verticalAlign:"middle",flexShrink:0}}>
+      <td style={{width:72,padding:"0 6px",textAlign:"right",verticalAlign:"middle",flexShrink:0}}>
         <div style={{display:"flex",gap:4,justifyContent:"flex-end",opacity:hov||selected||menu?1:0,transition:"opacity .1s"}}>
-          <button onClick={onOpen} title="Abrir" style={T.iBtn}>✏️</button>
           <button ref={btnRef} onClick={openMenu} title="Ações" style={T.iBtn}>⋯</button>
         </div>
         {menu&&createPortal(
@@ -1315,59 +1391,63 @@ function ItemCard({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete}) 
 
 // ── Linha de totais do grupo ───────────────────────────────────────────────────
 function GroupTotals({columns,items,gc}) {
-  // Descobre quais colunas têm soma relevante
-  const summable=columns.filter(c=>c.tipo==="currency"||c.tipo==="number");
-  if(!summable.length||!items.length) return null;
+  const currencyCols = columns.filter(c=>c.tipo==="currency");
+  const curCol = columns.find(c=>c.tipo==="currency");
+  const parCol = columns.find(c=>c.tipo==="number"&&c.nome.toLowerCase().includes("parcela"));
 
-  // Filtra itens preenchidos (têm pelo menos um valor não-nulo)
-  const preenchidos=items.filter(it=>{
-    const vals=it.values||{};
-    return Object.values(vals).some(v=>v!==null&&v!==undefined&&v!=="");
-  });
-  if(!preenchidos.length) return null;
+  if(!currencyCols.length||!items.length) return null;
 
-  // Calcula soma e conta por coluna
-  const totals=summable.map(col=>{
-    const vals=preenchidos.map(it=>{
-      const raw=it.values?.[col.id];
-      if(raw===null||raw===undefined||raw==="") return 0;
-      const v=typeof raw==="object"&&raw!==null&&"value" in raw?raw.value:raw;
-      return parseFloat(v)||0;
-    });
-    const soma=vals.reduce((s,v)=>s+v,0);
-    const count=vals.filter(v=>v>0).length;
-    return {col,soma,count};
-  }).filter(t=>t.soma>0||t.count>0);
+  const parse = raw=>{
+    if(raw===null||raw===undefined||raw==="") return 0;
+    const v=typeof raw==="object"&&raw!==null&&"value" in raw?raw.value:raw;
+    return parseFloat(v)||0;
+  };
 
-  if(!totals.length) return null;
+  // Soma somente itens onde a coluna específica tem valor > 0 (evita itens "fantasma")
+  const sums = currencyCols.map(col=>{
+    const seen=new Set(); let total=0,count=0;
+    for(const it of items){
+      if(seen.has(it.id))continue; seen.add(it.id);
+      const v=parse(it.values?.[col.id]);
+      if(v>0){total+=v;count++;}
+    }
+    return{col,total,count};
+  }).filter(x=>x.total>0);
+
+  let mrrTotal=0,mrrCount=0;
+  if(curCol&&parCol){
+    const seen=new Set();
+    for(const it of items){
+      if(seen.has(it.id))continue; seen.add(it.id);
+      const v=parse(it.values?.[curCol.id]);
+      const p=parse(it.values?.[parCol.id]);
+      if(v>0&&p>0){mrrTotal+=v/p;mrrCount++;}
+    }
+  }
+
+  if(!sums.length&&mrrTotal===0) return null;
 
   return (
-    <div style={{
-      borderLeft:`3px solid ${gc}`,
-      background:`${gc}08`,
-      borderTop:`1.5px dashed ${gc}30`,
-      padding:"10px 14px 11px",
-      display:"flex",flexWrap:"wrap",alignItems:"center",gap:0
-    }}>
-      <div style={{fontSize:10,fontWeight:800,color:gc,textTransform:"uppercase",
-        letterSpacing:.7,marginRight:16,opacity:.8,flexShrink:0,paddingRight:16,
-        borderRight:`1px solid ${gc}30`}}>
-        Σ Totais
-      </div>
-      <div style={{display:"flex",flexWrap:"wrap",gap:"8px 20px",flex:1}}>
-        {totals.map(({col,soma,count})=>(
-          <div key={col.id} style={{display:"flex",alignItems:"center",gap:6}}>
-            <span style={{fontSize:10,color:"var(--text3)",fontWeight:600}}>{col.nome}:</span>
-            <span style={{fontSize:13,fontWeight:800,color:"var(--text)"}}>
-              {col.tipo==="currency"?fmtBRL(soma):soma.toLocaleString("pt-BR",{maximumFractionDigits:2})}
-            </span>
-            {count>0&&<span style={{fontSize:10,color:"var(--text3)",background:"var(--surface3)",
-              borderRadius:10,padding:"1px 6px"}}>
-              {count} item{count!==1?"s":""}
-            </span>}
-          </div>
-        ))}
-      </div>
+    <div style={{borderLeft:`3px solid ${gc}`,background:`${gc}08`,borderTop:`1.5px dashed ${gc}30`,
+      padding:"9px 16px",display:"flex",flexWrap:"wrap",alignItems:"center",gap:6}}>
+      <span style={{fontSize:10,fontWeight:800,color:gc,textTransform:"uppercase",letterSpacing:.7,
+        paddingRight:10,marginRight:4,borderRight:`1px solid ${gc}30`,flexShrink:0}}>Σ Totais</span>
+      {sums.map(({col,total,count})=>(
+        <span key={col.id} style={{fontSize:13,fontWeight:700,color:"var(--text)",display:"inline-flex",
+          alignItems:"center",gap:5,background:"var(--surface3)",borderRadius:8,padding:"3px 10px",border:`1px solid ${gc}20`}}>
+          <span style={{fontSize:10,color:"var(--text3)",fontWeight:500}}>{col.nome}: </span>
+          {fmtBRL(total)}
+          <span style={{fontSize:10,color:"var(--text3)",background:"var(--surface)",borderRadius:5,padding:"1px 5px"}}>{count}×</span>
+        </span>
+      ))}
+      {mrrTotal>0&&(
+        <span style={{fontSize:13,fontWeight:700,color:"#059669",display:"inline-flex",alignItems:"center",gap:5,
+          background:"#05996912",borderRadius:8,padding:"3px 10px",border:"1px solid #05996930"}}>
+          <span style={{fontSize:10,color:"#059669",fontWeight:500,opacity:.8}}>Valor Mensal: </span>
+          {fmtBRL(mrrTotal)}
+          <span style={{fontSize:10,color:"#059669",background:"#05996920",borderRadius:5,padding:"1px 5px",opacity:.8}}>{mrrCount}×</span>
+        </span>
+      )}
     </div>
   );
 }
@@ -1385,51 +1465,126 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
   const [renaming,setRenaming]=useState(false);
   const [gname,setGname]=useState(group.nome);
   const nref=useRef();
+  const stickyRef=useRef();   // header scroll container (overflow:hidden)
+  const bodyRef=useRef();     // body scroll container (overflow:auto)
   useEffect(()=>{ if(renaming)nref.current?.focus(); },[renaming]);
   const allSel=items.length>0&&items.every(i=>selectedItems.has(i.id));
-  // Pode editar este grupo?
   const canEdit=perms.all||perms.editAny||(perms.slug==="sdr"&&group.owner_id===currentUser?.id)||((perms.slug==="closer")&&(groupAccess||[]).includes(currentUser?.id));
+  const canRename=perms.all||["administrador","ceo","financeiro","gerente_comercial"].includes(perms.slug);
+
+  // Sincroniza scroll horizontal: arrastar o body move o header junto
+  const syncHeader=()=>{
+    if(stickyRef.current&&bodyRef.current)
+      stickyRef.current.scrollLeft=bodyRef.current.scrollLeft;
+  };
+
+  // Colgroup compartilhado — garante alinhamento exato entre header e body
+  const colWidths=columns.map(c=>
+    c.tipo==="date"?105:c.tipo==="currency"||c.tipo==="number"||c.tipo==="calculated"?110:
+    c.tipo==="user"?75:c.tipo==="status"?130:140
+  );
+  const totalW=52+colWidths.reduce((s,w)=>s+w,0)+72;
+  const cg=(
+    <colgroup>
+      <col style={{width:52}}/>
+      {columns.map((col,i)=><col key={col.id} style={{width:colWidths[i]}}/>)}
+      <col style={{width:72}}/>
+    </colgroup>
+  );
 
   return (
-    <div style={{marginTop:16,borderRadius:11,overflow:"hidden",
+    <div style={{marginTop:16,borderRadius:11,
       border:isDraggingOver?`2px solid ${group.color}`:"2px solid transparent",transition:"border .15s"}}
       onDragOver={onDragOver} onDrop={onDrop}>
-      {/* Header */}
-      <div style={{display:"flex",alignItems:"center",gap:9,padding:"10px 14px",
-        background:group.color+"18",borderLeft:`4px solid ${group.color}`}}>
-        <button onClick={onToggle}
-          style={{background:"none",border:"none",cursor:"pointer",fontSize:11,color:group.color,
-            padding:0,transform:group.collapsed?"rotate(-90deg)":"none",transition:"transform .2s",lineHeight:1,flexShrink:0}}>▼</button>
-        {renaming&&canEdit
-          ? <input ref={nref} value={gname} onChange={e=>setGname(e.target.value)}
-              onBlur={()=>{setRenaming(false);if(gname.trim())onRenameGroup(gname.trim());else setGname(group.nome);}}
-              onKeyDown={e=>{if(e.key==="Enter"){setRenaming(false);if(gname.trim())onRenameGroup(gname.trim());}}}
-              style={{fontWeight:700,fontSize:14,color:group.color,border:"none",borderBottom:`2px solid ${group.color}`,
-                background:"transparent",outline:"none",minWidth:160}}/>
-          : <span onDoubleClick={()=>canEdit&&setRenaming(true)} title={canEdit?"Clique duplo para renomear":""}
-              style={{fontWeight:700,fontSize:14,color:group.color,cursor:canEdit?"pointer":"default"}}>{group.nome}</span>
-        }
-        <span style={{fontSize:12,color:"var(--text3)",background:"var(--surface)",borderRadius:20,padding:"1px 8px",fontWeight:600}}>{items.length}</span>
-        {/* Owner badge */}
-        {group.owner_id&&(()=>{const owner=allUsers.find(u=>u.id===group.owner_id);return owner?<Avatar user={owner} size={22}/>:null;})()}
-        <div style={{marginLeft:"auto",display:"flex",gap:7}}>
-          {canEdit&&<button onClick={()=>setRenaming(true)} title="Renomear grupo" style={{...SB,color:"var(--text2)",borderColor:"var(--border)"}}>✎</button>}
-          {canEdit&&<button onClick={onAddItem} style={{...SB,color:group.color,borderColor:group.color+"55"}}>+ Item</button>}
-          {onGroupSettings&&<button onClick={onGroupSettings} title="Configurações do grupo" style={{...SB,color:"var(--text2)",borderColor:"var(--border)"}}>⚙</button>}
-          {(perms.all||perms.deleteAny)&&<button onClick={onDelGroup} style={{...SB,color:"#dc2626",borderColor:"#FEE2E2"}}>🗑️</button>}
+
+      {/* ── CABEÇALHO STICKY (desktop): overflow:hidden → synced via JS ── */}
+      {!isMobile&&(
+        <div ref={stickyRef} style={{
+          position:"sticky",top:0,zIndex:5,
+          overflow:"hidden",          // sem scrollbar, mas scrollLeft é setável via JS
+          background:"var(--surface)",
+          borderRadius:group.collapsed?"11px":"11px 11px 0 0",
+          boxShadow:"0 2px 10px var(--shadow)"}}>
+
+          {/* Linha do grupo */}
+          <div style={{display:"flex",alignItems:"center",gap:9,padding:"10px 14px",
+            background:"var(--surface)",borderLeft:`4px solid ${group.color}`,minWidth:totalW}}>
+            <button onClick={onToggle}
+              style={{background:"none",border:"none",cursor:"pointer",fontSize:11,color:group.color,
+                padding:0,transform:group.collapsed?"rotate(-90deg)":"none",transition:"transform .2s",lineHeight:1,flexShrink:0}}>▼</button>
+            {renaming&&canRename
+              ? <input ref={nref} value={gname} onChange={e=>setGname(e.target.value)}
+                  onBlur={()=>{setRenaming(false);if(gname.trim())onRenameGroup(gname.trim());else setGname(group.nome);}}
+                  onKeyDown={e=>{if(e.key==="Enter"){setRenaming(false);if(gname.trim())onRenameGroup(gname.trim());}}}
+                  style={{fontWeight:700,fontSize:14,color:group.color,border:"none",borderBottom:`2px solid ${group.color}`,
+                    background:"transparent",outline:"none",minWidth:160}}/>
+              : <span onDoubleClick={()=>canRename&&setRenaming(true)} title={canRename?"Clique duplo para renomear":""}
+                  style={{fontWeight:700,fontSize:14,color:group.color,cursor:canRename?"pointer":"default"}}>{group.nome}</span>
+            }
+            <span style={{fontSize:12,color:"var(--text3)",background:"var(--surface3)",borderRadius:20,padding:"1px 8px",fontWeight:600}}>{items.length}</span>
+            {group.owner_id&&(()=>{const owner=allUsers.find(u=>u.id===group.owner_id);return owner?<Avatar user={owner} size={22}/>:null;})()}
+            <div style={{marginLeft:"auto",display:"flex",gap:7}}>
+              {canRename&&<button onClick={()=>setRenaming(true)} title="Renomear" style={{...SB,color:"var(--text2)",borderColor:"var(--border)"}}>✎</button>}
+              {canEdit&&<button onClick={onAddItem} style={{...SB,color:group.color,borderColor:group.color+"55"}}>+ Item</button>}
+              {onGroupSettings&&<button onClick={onGroupSettings} style={{...SB,color:"var(--text2)",borderColor:"var(--border)"}}>⚙</button>}
+              {(perms.all||perms.deleteAny)&&<button onClick={onDelGroup} style={{...SB,color:"#dc2626",borderColor:"#FEE2E2"}}>🗑️</button>}
+            </div>
+          </div>
+
+          {/* Linha das colunas — mesma estrutura de colgroup do body */}
+          {!group.collapsed&&(
+            <table style={{width:"100%",borderCollapse:"collapse",tableLayout:"fixed"}}>
+              {cg}
+              <tbody>
+                <tr style={{background:"var(--surface2)",borderBottom:"2px solid var(--border)"}}>
+                  <th style={{width:52,padding:"7px 6px",textAlign:"center",
+                    borderLeft:`4px solid ${group.color}`,borderRight:"1px solid var(--border)"}}>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
+                      <span style={{fontSize:11,opacity:0,userSelect:"none"}}>📝</span>
+                      <input type="checkbox" checked={allSel} onChange={()=>onSelectAll(items,!allSel)}
+                        style={{cursor:"pointer",accentColor:"var(--blue)",width:13,height:13}}/>
+                    </div>
+                  </th>
+                  {columns.map(col=>(
+                    <th key={col.id} style={{padding:"7px 11px",textAlign:"left",fontWeight:700,fontSize:11,
+                      color:"var(--text3)",whiteSpace:"nowrap",borderRight:"1px solid var(--border)",
+                      textTransform:"uppercase",letterSpacing:.4,overflow:"hidden",textOverflow:"ellipsis",
+                      background:"var(--surface2)"}}>
+                      {col.nome}
+                    </th>
+                  ))}
+                  <th style={{width:72,background:"var(--surface2)"}}/>
+                </tr>
+              </tbody>
+            </table>
+          )}
         </div>
-      </div>
+      )}
+
+      {/* ── Mobile: header simples ── */}
+      {isMobile&&(
+        <div style={{display:"flex",alignItems:"center",gap:9,padding:"10px 14px",
+          background:"var(--surface)",borderLeft:`4px solid ${group.color}`,borderRadius:"11px 11px 0 0"}}>
+          <button onClick={onToggle}
+            style={{background:"none",border:"none",cursor:"pointer",fontSize:11,color:group.color,
+              padding:0,transform:group.collapsed?"rotate(-90deg)":"none",transition:"transform .2s",lineHeight:1}}>▼</button>
+          <span style={{fontWeight:700,fontSize:14,color:group.color}}>{group.nome}</span>
+          <span style={{fontSize:12,color:"var(--text3)",background:"var(--surface3)",borderRadius:20,padding:"1px 8px",fontWeight:600}}>{items.length}</span>
+          {group.owner_id&&(()=>{const owner=allUsers.find(u=>u.id===group.owner_id);return owner?<Avatar user={owner} size={22}/>:null;})()}
+          <div style={{marginLeft:"auto",display:"flex",gap:7}}>
+            {canEdit&&<button onClick={onAddItem} style={{...SB,color:group.color,borderColor:group.color+"55"}}>+ Item</button>}
+            {(perms.all||perms.deleteAny)&&<button onClick={onDelGroup} style={{...SB,color:"#dc2626",borderColor:"#FEE2E2"}}>🗑️</button>}
+          </div>
+        </div>
+      )}
 
       {!group.collapsed&&(
         isMobile
           ? <div style={{padding:"8px 0",background:"var(--bg)"}}>
               {items.map(item=>(
                 <ItemCard key={item.id} item={item} columns={columns} gc={group.color} allUsers={allUsers}
-                  selected={selectedItems.has(item.id)}
-                  onToggle={()=>onToggleItem(item.id)}
-                  onOpen={()=>onOpenItem(item)}
-                  onDelete={()=>onDelItem(item.id)}
-                />
+                  selected={selectedItems.has(item.id)} onToggle={()=>onToggleItem(item.id)}
+                  onOpen={()=>onOpenItem(item)} onDelete={()=>onDelItem(item.id)}/>
               ))}
               {!items.length&&<div style={{padding:"12px 16px",color:"var(--text3)",fontSize:13}}>Nenhum item</div>}
               <GroupTotals columns={columns} items={items} gc={group.color}/>
@@ -1437,45 +1592,34 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                 + Adicionar item
               </button>
             </div>
-          : <div style={{overflowX:"auto",background:"var(--surface)"}}>
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                <thead>
-                  <tr style={{background:"var(--surface2)",borderBottom:"1.5px solid var(--border)"}}>
-                    <th style={{width:40,borderLeft:`3px solid ${group.color}`,textAlign:"center",padding:"8px 4px"}}>
-                      <input type="checkbox" checked={allSel} onChange={()=>onSelectAll(items,!allSel)}
-                        style={{cursor:"pointer",accentColor:"var(--blue)",width:15,height:15}}/>
-                    </th>
-                    {columns.map(col=>(
-                      <th key={col.id} style={{padding:"9px 11px",textAlign:"left",fontWeight:700,fontSize:11,
-                        color:"var(--text3)",whiteSpace:"nowrap",borderRight:"1px solid var(--border)",
-                        textTransform:"uppercase",letterSpacing:.5}}>
-                        {col.nome}
-                      </th>
+
+          // ── Desktop: body com scroll horizontal sincronizado com o header ──
+          : <>
+              <div ref={bodyRef} style={{overflowX:"auto",background:"var(--surface)"}} onScroll={syncHeader}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,tableLayout:"fixed"}}>
+                  {cg}
+                  <tbody>
+                    {items.map((item)=>(
+                      <ItemRow key={item.id} item={item} columns={columns} gc={group.color} allUsers={allUsers}
+                        selected={selectedItems.has(item.id)}
+                        onToggle={()=>onToggleItem(item.id)}
+                        onOpen={()=>onOpenItem(item)}
+                        onDelete={()=>onDelItem(item.id)}
+                        onMoveInativa={onMoveInativa?()=>onMoveInativa(item):null}
+                        onDupNeg={onDupNeg?()=>onDupNeg(item):null}
+                        onSendToNeg={onSendToNeg?()=>onSendToNeg(item):null}
+                        onSendToVendas={onSendToVendas?()=>onSendToVendas(item):null}
+                        onDragStart={e=>onDragStart(e,item,group.id)}
+                        onDragOver={e=>onItemDragOver(e,item.id,group.id)}
+                        onDrop={e=>onItemDrop(e,item.id,group.id)}
+                        onUpdateValue={(cid,v)=>onUpdateValue(item.id,cid,v)}
+                        onRespChange={ids=>onRespChange(item.id,ids)}
+                      />
                     ))}
-                    <th style={{width:90}}/>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((item)=>(
-                    <ItemRow key={item.id} item={item} columns={columns} gc={group.color} allUsers={allUsers}
-                      selected={selectedItems.has(item.id)}
-                      onToggle={()=>onToggleItem(item.id)}
-                      onOpen={()=>onOpenItem(item)}
-                      onDelete={()=>onDelItem(item.id)}
-                      onMoveInativa={onMoveInativa?()=>onMoveInativa(item):null}
-                      onDupNeg={onDupNeg?()=>onDupNeg(item):null}
-                      onSendToNeg={onSendToNeg?()=>onSendToNeg(item):null}
-                      onSendToVendas={onSendToVendas?()=>onSendToVendas(item):null}
-                      onDragStart={e=>onDragStart(e,item,group.id)}
-                      onDragOver={e=>onItemDragOver(e,item.id,group.id)}
-                      onDrop={e=>onItemDrop(e,item.id,group.id)}
-                      onUpdateValue={(cid,v)=>onUpdateValue(item.id,cid,v)}
-                      onRespChange={ids=>onRespChange(item.id,ids)}
-                    />
-                  ))}
-                </tbody>
-              </table>
-              {!items.length&&<div style={{padding:"14px 56px",color:"var(--text3)",fontSize:13,borderLeft:`3px solid ${group.color}`}}>Nenhum item</div>}
+                  </tbody>
+                </table>
+                {!items.length&&<div style={{padding:"14px 56px",color:"var(--text3)",fontSize:13,borderLeft:`3px solid ${group.color}`}}>Nenhum item</div>}
+              </div>
               <GroupTotals columns={columns} items={items} gc={group.color}/>
               <div style={{borderLeft:`3px solid ${group.color}`,background:"var(--surface)"}}>
                 <button onClick={onAddItem} style={{display:"flex",alignItems:"center",gap:7,padding:"10px 18px",
@@ -1483,14 +1627,11 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                   + Adicionar item
                 </button>
               </div>
-            </div>
+            </>
       )}
     </div>
   );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ITEM PANEL — disponível em TODOS os boards
 // ─────────────────────────────────────────────────────────────────────────────
 function ItemPanel({item,board,allUsers,currentUser,onClose,onUpdateValue,onRespChange,onAddUpdate,onDelUpdate}) {
   const [submitting,setSubmitting]=useState(false);
@@ -1539,7 +1680,7 @@ function ItemPanel({item,board,allUsers,currentUser,onClose,onUpdateValue,onResp
                   </div>
                   <button onClick={()=>onDelUpdate(u.id)} style={{...T.iBtn,color:"#dc2626",borderColor:"#FEE2E2",fontSize:11}}>✕</button>
                 </div>
-                <div style={{fontSize:13,color:"var(--text)",lineHeight:1.7}} dangerouslySetInnerHTML={{__html:u.content}}/>
+                <div style={{fontSize:13,color:"var(--text)",lineHeight:1.7}} dangerouslySetInnerHTML={{__html:linkifyHTML(u.content)}}/>
               </div>
             ))}
             {!(item.updates||[]).length&&<div style={{fontSize:13,color:"var(--text3)",textAlign:"center",padding:"24px 0"}}>Nenhuma atualização</div>}
@@ -1556,7 +1697,7 @@ function ItemPanel({item,board,allUsers,currentUser,onClose,onUpdateValue,onResp
 // ─────────────────────────────────────────────────────────────────────────────
 function FilterPanel({board,allUsers,filters,setFilters,onClose}) {
   const statusCols=board?.columns?.filter(c=>c.tipo==="status")||[];
-  // Deduplica por label, preservando cor de cada opção
+  const [local,setLocal]=useState(()=>({...filters}));
   const allStatuses=useMemo(()=>{
     const seen=new Map();
     for(const col of statusCols){
@@ -1566,9 +1707,11 @@ function FilterPanel({board,allUsers,filters,setFilters,onClose}) {
     }
     return [...seen.values()];
   },[statusCols]);
-  const toggleF=(key,val)=>setFilters(f=>({...f,[key]:(f[key]||[]).includes(val)?(f[key]||[]).filter(x=>x!==val):[...(f[key]||[]),val]}));
-  const hasAny=Object.values(filters).some(v=>Array.isArray(v)?v.length>0:!!v);
+  const toggleF=(key,val)=>setLocal(f=>({...f,[key]:(f[key]||[]).includes(val)?(f[key]||[]).filter(x=>x!==val):[...(f[key]||[]),val]}));
+  const hasAny=Object.values(local).some(v=>Array.isArray(v)?v.length>0:!!v);
   const {isMobile}=useBreakpoint();
+  const apply=()=>{setFilters(local);onClose();};
+  const clear=()=>setLocal({});
 
   return createPortal(
     <div style={{position:"fixed",top:0,right:0,bottom:0,width:isMobile?"100vw":"320px",
@@ -1578,7 +1721,7 @@ function FilterPanel({board,allUsers,filters,setFilters,onClose}) {
         alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
         <span style={{fontWeight:800,fontSize:16,color:"var(--text)"}}>Filtros</span>
         <div style={{display:"flex",alignItems:"center",gap:12}}>
-          {hasAny&&<button onClick={()=>setFilters({})}
+          {hasAny&&<button onClick={clear}
             style={{fontSize:12,color:"#dc2626",background:"none",border:"none",cursor:"pointer",fontWeight:600}}>Limpar tudo</button>}
           <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:24,color:"var(--text3)",lineHeight:1}}>×</button>
         </div>
@@ -1589,19 +1732,19 @@ function FilterPanel({board,allUsers,filters,setFilters,onClose}) {
         <div style={{display:"flex",gap:10,marginBottom:24}}>
           <div style={{flex:1}}>
             <label style={{fontSize:11,color:"var(--text3)",display:"block",marginBottom:4}}>De</label>
-            <input type="date" value={filters.dateFrom||""} onChange={e=>setFilters(f=>({...f,dateFrom:e.target.value||null}))}
+            <input type="date" value={local.dateFrom||""} onChange={e=>setLocal(f=>({...f,dateFrom:e.target.value||null}))}
               style={{...T.inp,padding:"8px 10px",fontSize:12}}/>
           </div>
           <div style={{flex:1}}>
             <label style={{fontSize:11,color:"var(--text3)",display:"block",marginBottom:4}}>Até</label>
-            <input type="date" value={filters.dateTo||""} onChange={e=>setFilters(f=>({...f,dateTo:e.target.value||null}))}
+            <input type="date" value={local.dateTo||""} onChange={e=>setLocal(f=>({...f,dateTo:e.target.value||null}))}
               style={{...T.inp,padding:"8px 10px",fontSize:12}}/>
           </div>
         </div>
 
         {/* Filtro por mês */}
         <div style={{...T.lbl,marginBottom:12}}>Mês específico</div>
-        <input type="month" value={filters.month||""} onChange={e=>setFilters(f=>({...f,month:e.target.value||null}))}
+        <input type="month" value={local.month||""} onChange={e=>setLocal(f=>({...f,month:e.target.value||null}))}
           style={{...T.inp,marginBottom:24}}/>
 
         {/* Status */}
@@ -1609,7 +1752,7 @@ function FilterPanel({board,allUsers,filters,setFilters,onClose}) {
           <div style={{...T.lbl,marginBottom:12}}>Status</div>
           <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:24}}>
             {allStatuses.map(opt=>{
-              const active=(filters.status||[]).includes(opt.label);
+              const active=(local.status||[]).includes(opt.label);
               return (
                 <div key={opt.id||opt.label} onClick={()=>toggleF("status",opt.label)}
                   style={{cursor:"pointer",opacity:active?1:.45,transform:active?"scale(1.04)":"none",transition:"all .15s"}}>
@@ -1625,7 +1768,7 @@ function FilterPanel({board,allUsers,filters,setFilters,onClose}) {
           <div style={{...T.lbl,marginBottom:12}}>Responsável</div>
           <div style={{display:"flex",flexDirection:"column",gap:7}}>
             {allUsers.map(u=>{
-              const active=(filters.resp||[]).includes(u.id);
+              const active=(local.resp||[]).includes(u.id);
               return (
                 <div key={u.id} onClick={()=>toggleF("resp",u.id)}
                   style={{display:"flex",alignItems:"center",gap:11,padding:"10px 14px",borderRadius:9,cursor:"pointer",
@@ -1642,8 +1785,174 @@ function FilterPanel({board,allUsers,filters,setFilters,onClose}) {
           </div>
         </>}
       </div>
+      {/* Botão Aplicar Filtros */}
+      <div style={{padding:"14px 22px",borderTop:"1px solid var(--border)",display:"flex",gap:10,flexShrink:0}}>
+        <button onClick={apply}
+          style={{...T.btn,flex:1,background:"var(--blue)",color:"#fff",padding:"11px 0",fontSize:14,fontWeight:700,justifyContent:"center"}}>
+          ✓ Aplicar Filtros
+        </button>
+        <button onClick={onClose}
+          style={{...T.btn,background:"var(--surface3)",color:"var(--text2)",padding:"11px 16px",fontSize:13,border:"1px solid var(--border)"}}>
+          Cancelar
+        </button>
+      </div>
     </div>,
     document.body
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PARENT GROUP CONTAINER — "grupo mãe" do board Negociações
+// ─────────────────────────────────────────────────────────────────────────────
+function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedItems,isMobile,
+  perms,currentUser,groupAccess,canManageParent,
+  onToggleItem,onSelectAll,onAddItem,onDelItem,onOpenItem,
+  onUpdateValue,onRespChange,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,
+  onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,
+  onRenameSubGroup,onDelSubGroup,onEditParent,onDelParent}) {
+
+  const [collapsed,setCollapsed]=useState(false);
+  const [renaming,setRenaming]=useState(false);
+  const [pgName,setPgName]=useState(parentGroup.nome);
+  const nref=useRef();
+  const canRenameParent=["administrador","ceo","financeiro","gerente_comercial"].includes(perms?.slug)||perms?.all;
+  useEffect(()=>{if(renaming)nref.current?.focus();},[renaming]);
+
+  const totalItems=subGroups.reduce((s,g)=>g.items?.length?s+g.items.length:s,0);
+  const owner=allUsers.find(u=>u.id===parentGroup.owner_id);
+  const color=parentGroup.color||"#3145FF";
+
+  return (
+    <div style={{marginTop:20,borderRadius:13,overflow:"hidden",
+      border:`2px solid ${color}30`,boxShadow:`0 2px 16px ${color}12`}}>
+
+      {/* Header do grupo mãe */}
+      <div style={{display:"flex",alignItems:"center",gap:10,padding:"12px 16px",
+        background:`${color}12`,borderLeft:`5px solid ${color}`,cursor:"pointer"}}
+        onClick={()=>!renaming&&setCollapsed(p=>!p)}>
+        <button onClick={e=>{e.stopPropagation();setCollapsed(p=>!p);}}
+          style={{background:"none",border:"none",cursor:"pointer",fontSize:13,color,padding:0,
+            transform:collapsed?"rotate(-90deg)":"none",transition:"transform .2s",lineHeight:1,flexShrink:0}}>▼</button>
+        {renaming&&canRenameParent
+          ? <input ref={nref} value={pgName} onChange={e=>setPgName(e.target.value)}
+              onClick={e=>e.stopPropagation()}
+              onBlur={()=>{setRenaming(false);if(pgName.trim()&&pgName!==parentGroup.nome)onEditParent?.({...parentGroup,nome:pgName.trim()});else setPgName(parentGroup.nome);}}
+              onKeyDown={e=>{if(e.key==="Enter"){setRenaming(false);if(pgName.trim())onEditParent?.({...parentGroup,nome:pgName.trim()});}if(e.key==="Escape"){setRenaming(false);setPgName(parentGroup.nome);}}}
+              style={{fontWeight:800,fontSize:15,color,border:"none",borderBottom:`2px solid ${color}`,
+                background:"transparent",outline:"none",minWidth:180}} autoFocus/>
+          : <span onDoubleClick={e=>{e.stopPropagation();canRenameParent&&setRenaming(true);}}
+              style={{fontWeight:800,fontSize:15,color,flex:1}}>{parentGroup.nome}</span>
+        }
+        {owner&&<Avatar user={owner} size={24}/>}
+        <span style={{fontSize:12,color:"var(--text3)",background:"var(--surface)",borderRadius:20,padding:"2px 10px",fontWeight:700,flexShrink:0}}>
+          {totalItems} lead{totalItems!==1?"s":""}
+        </span>
+        {canManageParent&&<div style={{display:"flex",gap:6,marginLeft:"auto"}} onClick={e=>e.stopPropagation()}>
+          {canRenameParent&&<button onClick={()=>setRenaming(true)} style={{...SB,color:"var(--text2)",borderColor:"var(--border)",fontSize:11}}>✎</button>}
+          {canManageParent&&<button onClick={()=>onEditParent&&onEditParent(parentGroup)}
+            style={{...SB,color:color,borderColor:color+"55",fontSize:11}}>⚙ Editar</button>}
+          <button onClick={()=>onDelParent&&onDelParent(parentGroup.id)}
+            style={{...SB,color:"#dc2626",borderColor:"#FEE2E2",fontSize:11}}>🗑️</button>
+        </div>}
+      </div>
+
+      {/* Sub-grupos */}
+      {!collapsed&&(
+        <div style={{padding:"8px 12px 12px",background:"var(--bg)"}}>
+          {subGroups.map(sg=>(
+            <Group key={sg.id} group={sg} columns={columns}
+              items={sg.items||[]} isDraggingOver={false}
+              allUsers={allUsers} selectedItems={selectedItems} isMobile={isMobile}
+              perms={perms} currentUser={currentUser}
+              groupAccess={groupAccess[sg.id]||[]}
+              onToggleItem={onToggleItem} onSelectAll={onSelectAll}
+              onAddItem={()=>onAddItem(sg.id)}
+              onDelGroup={()=>onDelSubGroup(sg.id)}
+              onRenameGroup={n=>onRenameSubGroup(sg.id,n)}
+              onToggle={()=>{}}
+              onOpenItem={item=>onOpenItem(item,sg.id)}
+              onUpdateValue={(iid,cid,v)=>onUpdateValue(iid,sg.id,cid,v)}
+              onRespChange={(iid,ids)=>onRespChange(iid,sg.id,ids)}
+              onDelItem={iid=>onDelItem(sg.id,iid)}
+              onMoveInativa={onMoveInativa?item=>onMoveInativa(sg.id,item):null}
+              onDupNeg={onDupNeg?item=>onDupNeg(sg.id,item):null}
+              onSendToNeg={onSendToNeg?item=>onSendToNeg(sg.id,item):null}
+              onSendToVendas={onSendToVendas?item=>onSendToVendas(sg.id,item):null}
+              onDragStart={onDragStart} onDragOver={e=>onDragOver(e,sg.id)} onDrop={e=>onDrop(e,sg.id)}
+              onItemDragOver={onItemDragOver} onItemDrop={onItemDrop}
+              onGroupSettings={null}/>
+          ))}
+          {!subGroups.length&&<div style={{padding:"12px 16px",color:"var(--text3)",fontSize:13}}>Nenhum sub-grupo</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Modal para criar/editar grupo mãe de Negociações
+function ParentGroupModal({initial,allUsers,onSave,onCancel}) {
+  const CLOSER_ROLES=["closer"];
+  const closers=allUsers.filter(u=>CLOSER_ROLES.includes(u.funcao?.toLowerCase())||CLOSER_ROLES.includes(u.role?.toLowerCase()));
+  const [nome,setNome]=useState(initial?.nome||"");
+  const [color,setColor]=useState(initial?.color||"#3145FF");
+  const [ownerId,setOwnerId]=useState(initial?.owner_id||"");
+  const isEdit=!!initial?.id;
+
+  const PALETTE=["#3145FF","#059669","#d97706","#7c3aed","#0891b2","#dc2626","#e11d48","#0f766e","#1d4ed8","#b45309"];
+
+  return (
+    <Modal title={isEdit?"Editar Grupo Mãe":"+ Criar Grupo Mãe (Closer)"}
+      onClose={onCancel}
+      footer={<>
+        <button onClick={onCancel} style={{...T.btn,background:"var(--surface3)",color:"var(--text2)",padding:"9px 20px",border:"1px solid var(--border)"}}>Cancelar</button>
+        <button onClick={()=>nome.trim()&&onSave({nome:nome.trim(),color,owner_id:ownerId||null})}
+          style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"9px 24px"}} disabled={!nome.trim()}>
+          {isEdit?"Salvar":"Criar Grupo"}
+        </button>
+      </>}>
+      <div style={{display:"flex",flexDirection:"column",gap:18}}>
+
+        <div>
+          <label style={T.lbl}>Nome do Grupo (ex: Closer - João)</label>
+          <input autoFocus value={nome} onChange={e=>setNome(e.target.value)}
+            style={{...T.inp}} placeholder="Ex: João Silva — Closer"/>
+        </div>
+
+        <div>
+          <label style={T.lbl}>Closer Responsável</label>
+          <select value={ownerId} onChange={e=>setOwnerId(e.target.value)} style={{...T.inp}}>
+            <option value="">Selecionar closer…</option>
+            {(allUsers).map(u=>(
+              <option key={u.id} value={u.id}>{u.nome} {u.funcao?`(${u.funcao})`:""}</option>
+            ))}
+          </select>
+          <div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>O closer selecionado terá acesso exclusivo a este grupo</div>
+        </div>
+
+        <div>
+          <label style={T.lbl}>Cor do Grupo</label>
+          <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:6}}>
+            {PALETTE.map(c=>(
+              <div key={c} onClick={()=>setColor(c)}
+                style={{width:30,height:30,borderRadius:8,background:c,cursor:"pointer",
+                  outline:color===c?`3px solid ${c}`:"3px solid transparent",
+                  outlineOffset:2,transition:"outline .15s"}}/>
+            ))}
+            <input type="color" value={color} onChange={e=>setColor(e.target.value)}
+              style={{width:30,height:30,borderRadius:8,border:"1.5px solid var(--border)",cursor:"pointer",padding:2}}/>
+          </div>
+        </div>
+
+        {!isEdit&&<div style={{background:"var(--surface2)",borderRadius:10,padding:"12px 14px",fontSize:12,color:"var(--text3)",borderLeft:"3px solid var(--blue)"}}>
+          <strong style={{color:"var(--text)"}}>Ao criar, serão gerados automaticamente 4 sub-grupos:</strong>
+          <ul style={{margin:"6px 0 0",paddingLeft:18,lineHeight:1.8}}>
+            <li>Oportunidades Closer</li><li>Negociando</li>
+            <li>Fechado/Ganho</li><li>Recusado/Negócio Futuro</li>
+          </ul>
+        </div>}
+
+      </div>
+    </Modal>
   );
 }
 
@@ -1672,6 +1981,7 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
   const [groupCreateM,setGroupCreateM]=useState(false);
   const [groupSettingsM,setGroupSettingsM]=useState(null); // group obj
   const [moveItemsM,setMoveItemsM]=useState(false); // mover selecionados
+  const [parentGroupM,setParentGroupM]=useState(null); // null=fechado, {}=criar, {id,...}=editar
 
   const loadBoard=useCallback(async bid=>{
     if(!bid){setBoard(null);setLoading(false);return;}
@@ -1834,6 +2144,89 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
   };
   const renameGroup=async(gid,nome)=>{upd(b=>{const g=b.groups.find(g=>g.id===gid);if(g)g.nome=nome;});await db.from("groups").update({nome}).eq("id",gid);};
   const toggleGroup=gid=>upd(b=>{const g=b.groups.find(g=>g.id===gid);if(g)g.collapsed=!g.collapsed;});
+
+  // ── CRUD grupos mãe (Negociações hierárquico)
+  const SUB_GRUPOS_PADRAO=[
+    {nome:"Oportunidades Closer",color:"#3B82F6"},
+    {nome:"Negociando",color:"#F59E0B"},
+    {nome:"Fechado/Ganho",color:"#10B981"},
+    {nome:"Recusado/Negócio Futuro",color:"#EF4444"},
+  ];
+
+  const addParentGroup=async({nome,color,owner_id})=>{
+    const ordem=(board?.groups||[]).filter(g=>g.is_parent).length;
+    const{data:pg,error}=await db.from("groups")
+      .insert({nome:nome.trim(),board_id:boardId,color,ordem,owner_id:owner_id||null,is_parent:true})
+      .select().single();
+    if(error){toast("Erro ao criar grupo mãe: "+error.message,"error");return;}
+
+    // Registra acesso do owner no grupo mãe
+    if(owner_id) await db.from("group_access").upsert({group_id:pg.id,user_id:owner_id},{onConflict:"group_id,user_id",ignoreDuplicates:true});
+
+    // Cria os 4 sub-grupos padrão
+    const sgRows=SUB_GRUPOS_PADRAO.map((sg,i)=>({
+      nome:sg.nome,board_id:boardId,color:sg.color,
+      ordem:i,owner_id:owner_id||null,parent_group_id:pg.id,is_parent:false
+    }));
+    const{data:sgs}=await db.from("groups").insert(sgRows).select();
+
+    // Registra acesso do owner nos sub-grupos
+    if(owner_id&&sgs?.length){
+      const accRows=sgs.map(sg=>({group_id:sg.id,user_id:owner_id}));
+      await db.from("group_access").insert(accRows).then(()=>{});
+    }
+
+    upd(b=>{
+      b.groups.push({...pg,items:[],is_parent:true});
+      (sgs||[]).forEach(sg=>b.groups.push({...sg,items:[]}));
+    });
+    setGroupAccess(prev=>{
+      const n={...prev,[pg.id]:owner_id?[owner_id]:[]};
+      (sgs||[]).forEach(sg=>{n[sg.id]=owner_id?[owner_id]:[];});
+      return n;
+    });
+    setParentGroupM(null);
+    toast("Grupo mãe criado com 4 sub-grupos!");
+  };
+
+  const editParentGroup=async(updated)=>{
+    const{id,nome,color,owner_id}=updated;
+    await db.from("groups").update({nome,color,owner_id:owner_id||null}).eq("id",id);
+    // Atualiza owner nos sub-grupos também
+    const subIds=(board?.groups||[]).filter(g=>g.parent_group_id===id).map(g=>g.id);
+    if(subIds.length) await db.from("groups").update({owner_id:owner_id||null}).in("id",subIds);
+    // Atualiza acessos
+    if(owner_id){
+      const allIds=[id,...subIds];
+      await Promise.all(allIds.map(gid=>db.from("group_access").upsert({group_id:gid,user_id:owner_id},{onConflict:"group_id,user_id",ignoreDuplicates:true})));
+    }
+    upd(b=>{
+      const pg=b.groups.find(g=>g.id===id);if(pg){pg.nome=nome;pg.color=color;pg.owner_id=owner_id||null;}
+      b.groups.filter(g=>g.parent_group_id===id).forEach(sg=>{sg.owner_id=owner_id||null;});
+    });
+    setGroupAccess(prev=>{
+      const n={...prev};
+      [id,...subIds].forEach(gid=>{if(owner_id&&!n[gid]?.includes(owner_id))n[gid]=[...(n[gid]||[]),owner_id];});
+      return n;
+    });
+    setParentGroupM(null);
+    toast("Grupo mãe atualizado!");
+  };
+
+  const delParentGroup=pgid=>{
+    const pg=board?.groups.find(g=>g.id===pgid);
+    const subs=board?.groups.filter(g=>g.parent_group_id===pgid)||[];
+    const totalItems=subs.reduce((s,g)=>s+g.items.length,0);
+    setConfirmM({title:"Excluir grupo mãe",danger:true,
+      message:`Excluir "${pg?.nome}" e todos os ${subs.length} sub-grupos com ${totalItems} lead(s)? Esta ação é irreversível.`,
+      onConfirm:async()=>{
+        upd(b=>{b.groups=b.groups.filter(g=>g.id!==pgid&&g.parent_group_id!==pgid);});
+        bump(boardId,-totalItems);
+        await db.from("groups").delete().eq("id",pgid); // CASCADE remove sub-grupos
+        toast("Grupo mãe excluído");setConfirmM(null);
+      }
+    });
+  };
 
   // ── Updates
   const loadUpdates=async(item,gid)=>{
@@ -2130,16 +2523,50 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
   const isPreVendas      = board?.nome==="Pré-Vendas";        // botão → Negociações (todos)
   const isNegociacoes    = board?.nome==="Negociações";       // botão → Vendas (sendToVendas)
 
+  // ── Hierarquia de grupos
+  const canManageParent=perms.all||perms.manageBoards||["administrador","ceo","gerente_comercial"].includes(perms.slug);
+
   // Filtra grupos conforme permissão do usuário
   const visibleGroups=useMemo(()=>{
     if(!board) return [];
-    if(perms.all||perms.viewAll) return board.groups; // admin/ceo/gerente/financeiro vê tudo
-    if(perms.slug==="sdr")
-      return board.groups.filter(g=>g.owner_id===currentUser?.id);
-    if(perms.slug==="closer")
-      return board.groups.filter(g=>(groupAccess[g.id]||[]).includes(currentUser?.id));
-    return board.groups;
-  },[board,perms,currentUser,groupAccess]);
+
+    if(!isNegociacoes){
+      if(perms.all||perms.viewAll) return board.groups;
+      if(perms.slug==="sdr") return board.groups.filter(g=>g.owner_id===currentUser?.id);
+      if(perms.slug==="closer") return board.groups.filter(g=>(groupAccess[g.id]||[]).includes(currentUser?.id));
+      return board.groups;
+    }
+
+    // Para Negociações: retorna grupos mãe com seus sub-grupos embutidos
+    const allGroups=board.groups;
+    const parentGroups=allGroups.filter(g=>g.is_parent);
+    const subGroups=allGroups.filter(g=>!!g.parent_group_id);
+    const legacyGroups=allGroups.filter(g=>!g.is_parent&&!g.parent_group_id); // grupos antigos sem pai
+
+    // Enriquece grupos mãe com sub-grupos
+    let enriched=parentGroups.map(pg=>({
+      ...pg,
+      _isParent:true,
+      subGroups:subGroups.filter(sg=>sg.parent_group_id===pg.id)
+        .sort((a,b)=>a.ordem-b.ordem)
+        .map(sg=>({...sg,items:applyFilters(sg.items||[])})),
+    }));
+
+    // Closer: vê apenas o seu grupo mãe (pelo owner_id)
+    if(perms.slug==="closer"){
+      enriched=enriched.filter(pg=>pg.owner_id===currentUser?.id||(groupAccess[pg.id]||[]).includes(currentUser?.id));
+    }
+
+    // Grupos legados (antes da migração) ficam visíveis normalmente
+    const legacyFiltered=legacyGroups.filter(g=>{
+      if(perms.all||perms.viewAll) return true;
+      if(perms.slug==="sdr") return g.owner_id===currentUser?.id;
+      if(perms.slug==="closer") return (groupAccess[g.id]||[]).includes(currentUser?.id);
+      return true;
+    });
+
+    return [...enriched,...legacyFiltered.map(g=>({...g,items:applyFilters(g.items||[])}))];
+  },[board,perms,currentUser,groupAccess,isNegociacoes,filters,search]);
   const filterCount=(filters.status?.length||0)+(filters.resp?.length||0)+(filters.dateFrom?1:0)+(filters.dateTo?1:0)+(filters.month?1:0)+(search.trim()?1:0);
 
   if(loading) return <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}><Spinner size={40}/><span style={{color:"var(--text3)",fontSize:14}}>Carregando…</span></div>;
@@ -2190,35 +2617,77 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
       {/* Content */}
       <div style={{flex:1,overflowY:"auto",padding:isMobile?"8px 12px 120px":"8px 22px 120px"}}>
         {visibleGroups.map(group=>(
-          <Group key={group.id} group={group} columns={board.columns}
-            items={applyFilters(group.items)}
-            isDraggingOver={dragOverGroup===group.id}
-            allUsers={allUsers} selectedItems={selected} isMobile={isMobile}
-            perms={perms} currentUser={currentUser}
-            groupAccess={groupAccess[group.id]||[]}
-            onToggleItem={toggleItem} onSelectAll={selectAll}
-            onAddItem={()=>addItem(group.id)} onDelGroup={()=>delGroup(group.id)}
-            onRenameGroup={n=>renameGroup(group.id,n)} onToggle={()=>toggleGroup(group.id)}
-            onOpenItem={item=>loadUpdates(item,group.id)}
-            onUpdateValue={(iid,cid,v)=>updateValue(iid,group.id,cid,v)}
-            onRespChange={(iid,ids)=>updateResp(iid,group.id,ids)}
-            onDelItem={iid=>setConfirmM({title:"Excluir item",danger:true,message:"Excluir permanentemente?",onConfirm:()=>{delItem(group.id,iid);setConfirmM(null);}})}
-            onMoveInativa={canActions?item=>moveInativa(group.id,item):null}
-            onDupNeg={canActions?item=>dupNeg(group.id,item):null}
-            onSendToNeg={isPreVendas?item=>sendToNeg(group.id,item):null}
-            onSendToVendas={isNegociacoes&&perms.sendToVendas?item=>sendToVendas(group.id,item):null}
-            onDragStart={handleDragStart} onDragOver={e=>handleGroupDragOver(e,group.id)} onDrop={e=>handleGroupDrop(e,group.id)}
-            onItemDragOver={handleItemDragOver} onItemDrop={handleItemDrop}
-            onGroupSettings={perms.isFull||perms.all?()=>setGroupSettingsM(group):null}
-          />
+          group._isParent
+            ? <ParentGroupContainer key={group.id}
+                parentGroup={group}
+                subGroups={group.subGroups||[]}
+                columns={board.columns}
+                allUsers={allUsers}
+                selectedItems={selected}
+                isMobile={isMobile}
+                perms={perms}
+                currentUser={currentUser}
+                groupAccess={groupAccess}
+                canManageParent={canManageParent}
+                onToggleItem={toggleItem}
+                onSelectAll={selectAll}
+                onAddItem={gid=>addItem(gid)}
+                onDelItem={(gid,iid)=>setConfirmM({title:"Excluir item",danger:true,message:"Excluir permanentemente?",onConfirm:()=>{delItem(gid,iid);setConfirmM(null);}})}
+                onOpenItem={(item,gid)=>loadUpdates(item,gid)}
+                onUpdateValue={(iid,gid,cid,v)=>updateValue(iid,gid,cid,v)}
+                onRespChange={(iid,gid,ids)=>updateResp(iid,gid,ids)}
+                onMoveInativa={canActions?(gid,item)=>moveInativa(gid,item):null}
+                onDupNeg={canActions?(gid,item)=>dupNeg(gid,item):null}
+                onSendToNeg={isPreVendas?(gid,item)=>sendToNeg(gid,item):null}
+                onSendToVendas={isNegociacoes&&perms.sendToVendas?(gid,item)=>sendToVendas(gid,item):null}
+                onDragStart={handleDragStart}
+                onDragOver={(e,gid)=>handleGroupDragOver(e,gid)}
+                onDrop={(e,gid)=>handleGroupDrop(e,gid)}
+                onItemDragOver={handleItemDragOver}
+                onItemDrop={handleItemDrop}
+                onRenameSubGroup={(gid,n)=>renameGroup(gid,n)}
+                onDelSubGroup={gid=>delGroup(gid)}
+                onEditParent={pg=>setParentGroupM(pg)}
+                onDelParent={pgid=>delParentGroup(pgid)}/>
+            : <Group key={group.id} group={group} columns={board.columns}
+                items={isNegociacoes?group.items:applyFilters(group.items)}
+                isDraggingOver={dragOverGroup===group.id}
+                allUsers={allUsers} selectedItems={selected} isMobile={isMobile}
+                perms={perms} currentUser={currentUser}
+                groupAccess={groupAccess[group.id]||[]}
+                onToggleItem={toggleItem} onSelectAll={selectAll}
+                onAddItem={()=>addItem(group.id)} onDelGroup={()=>delGroup(group.id)}
+                onRenameGroup={n=>renameGroup(group.id,n)} onToggle={()=>toggleGroup(group.id)}
+                onOpenItem={item=>loadUpdates(item,group.id)}
+                onUpdateValue={(iid,cid,v)=>updateValue(iid,group.id,cid,v)}
+                onRespChange={(iid,ids)=>updateResp(iid,group.id,ids)}
+                onDelItem={iid=>setConfirmM({title:"Excluir item",danger:true,message:"Excluir permanentemente?",onConfirm:()=>{delItem(group.id,iid);setConfirmM(null);}})}
+                onMoveInativa={canActions?item=>moveInativa(group.id,item):null}
+                onDupNeg={canActions?item=>dupNeg(group.id,item):null}
+                onSendToNeg={isPreVendas?item=>sendToNeg(group.id,item):null}
+                onSendToVendas={isNegociacoes&&perms.sendToVendas?item=>sendToVendas(group.id,item):null}
+                onDragStart={handleDragStart} onDragOver={e=>handleGroupDragOver(e,group.id)} onDrop={e=>handleGroupDrop(e,group.id)}
+                onItemDragOver={handleItemDragOver} onItemDrop={handleItemDrop}
+                onGroupSettings={perms.isFull||perms.all?()=>setGroupSettingsM(group):null}
+              />
         ))}
         {perms.createGroups&&(
-          <button onClick={()=>setGroupCreateM(true)}
-            style={{marginTop:18,display:"flex",alignItems:"center",gap:9,background:"none",
-              border:"1.5px dashed var(--border)",borderRadius:9,padding:"11px 24px",cursor:"pointer",
-              color:"var(--text3)",fontSize:13}}>
-            + Adicionar grupo
-          </button>
+          <div style={{marginTop:18,display:"flex",gap:10,flexWrap:"wrap"}}>
+            {isNegociacoes&&canManageParent&&(
+              <button onClick={()=>setParentGroupM({})}
+                style={{display:"flex",alignItems:"center",gap:9,background:"none",
+                  border:"1.5px dashed var(--blue)",borderRadius:9,padding:"11px 24px",cursor:"pointer",
+                  color:"var(--blue)",fontSize:13,fontWeight:700}}>
+                + Grupo Mãe (Closer)
+              </button>
+            )}
+            {!isNegociacoes&&<button onClick={()=>setGroupCreateM(true)}
+              style={{display:"flex",alignItems:"center",gap:9,background:"none",
+                border:"1.5px dashed var(--border)",borderRadius:9,padding:"11px 24px",cursor:"pointer",
+                color:"var(--text3)",fontSize:13}}>
+              + Adicionar grupo
+            </button>}
+          </div>
         )}
       </div>
 
@@ -2234,6 +2703,13 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
       {showFilters&&<FilterPanel board={board} allUsers={allUsers} filters={filters} setFilters={setFilters} onClose={()=>setShowFilters(false)}/>}
       {showColMgr&&<ColumnManagerModal board={board} toast={toast} onClose={()=>setShowColMgr(false)} onRefresh={()=>loadBoard(boardId)}/>}
       {showExport&&<ExportModal board={{...board,groups:board.groups.map(g=>({...g,items:applyFilters(g.items)}))}} onClose={()=>setShowExport(false)}/>}
+      {parentGroupM!==null&&(
+        <ParentGroupModal
+          initial={parentGroupM?.id?parentGroupM:null}
+          allUsers={allUsers}
+          onSave={parentGroupM?.id?editParentGroup:addParentGroup}
+          onCancel={()=>setParentGroupM(null)}/>
+      )}
 
       {selected.size>0&&createPortal(
         <div style={{position:"fixed",bottom:28,left:"50%",transform:"translateX(-50%)",background:"var(--sidebar)",
