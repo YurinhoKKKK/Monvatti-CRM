@@ -468,6 +468,81 @@ function GroupSelectorModal({title,groups,onSelect,onCancel}) {
   );
 }
 
+// ─── MODAL ENVIAR PARA NEGOCIAÇÕES — 2 etapas: Closer → Sub-grupo ────────────
+function SendToNegModal({groups, onSelect, onCancel}) {
+  const [step,setStep]=useState(1);
+  const [selParent,setSelParent]=useState(null);
+  const parents=groups.filter(g=>g.is_parent);
+  const childrenOf=pid=>groups.filter(g=>g.parent_group_id===pid);
+  const closerLabel=nome=>(nome||"").replace(/Closer\s*[-\u2013]\s*/i,"").trim();
+  const getInitials=nome=>closerLabel(nome).split(" ").slice(0,2).map(p=>p[0]||"").join("").toUpperCase();
+
+  if(step===1) return (
+    <Modal title="🤝 Enviar para Negociações" onClose={onCancel} width={430}>
+      <div style={{marginBottom:14,fontSize:13,color:"var(--text3)"}}>
+        Selecione o <strong style={{color:"var(--text)"}}>Closer</strong> que receberá o lead:
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:10}}>
+        {parents.map(p=>{
+          const subs=childrenOf(p.id);
+          return (
+            <button key={p.id} onClick={()=>{setSelParent(p);setStep(2);}}
+              style={{display:"flex",alignItems:"center",gap:14,padding:"14px 16px",
+                background:"var(--surface2)",border:`2px solid ${p.color}35`,borderRadius:12,
+                cursor:"pointer",width:"100%",textAlign:"left",transition:"all .15s"}}
+              onMouseEnter={e=>{e.currentTarget.style.borderColor=p.color;e.currentTarget.style.background="var(--surface3)";}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor=`${p.color}35`;e.currentTarget.style.background="var(--surface2)";}}>
+              <div style={{width:44,height:44,borderRadius:"50%",background:p.color,flexShrink:0,
+                display:"flex",alignItems:"center",justifyContent:"center",
+                fontWeight:800,fontSize:17,color:"#fff",letterSpacing:.5}}>
+                {getInitials(p.nome)}
+              </div>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:700,fontSize:15,color:"var(--text)",marginBottom:3}}>{closerLabel(p.nome)}</div>
+                <div style={{fontSize:12,color:"var(--text3)"}}>{subs.map(s=>s.nome).join(" · ")}</div>
+              </div>
+              <div style={{fontSize:20,color:p.color,opacity:.6,fontWeight:300}}>›</div>
+            </button>
+          );
+        })}
+      </div>
+    </Modal>
+  );
+
+  const subs=childrenOf(selParent.id);
+  return (
+    <Modal title="🤝 Enviar para Negociações" onClose={onCancel} width={430}>
+      <button onClick={()=>setStep(1)}
+        style={{display:"flex",alignItems:"center",gap:10,width:"100%",
+          padding:"10px 14px",background:`${selParent.color}15`,border:`1.5px solid ${selParent.color}40`,
+          borderRadius:10,cursor:"pointer",marginBottom:16,textAlign:"left"}}>
+        <span style={{fontSize:16,color:selParent.color}}>←</span>
+        <div style={{width:32,height:32,borderRadius:"50%",background:selParent.color,flexShrink:0,
+          display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:13,color:"#fff"}}>
+          {getInitials(selParent.nome)}
+        </div>
+        <div>
+          <div style={{fontWeight:700,fontSize:13,color:"var(--text)"}}>{closerLabel(selParent.nome)}</div>
+          <div style={{fontSize:11,color:"var(--text3)"}}>Escolha o sub-grupo de destino</div>
+        </div>
+      </button>
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        {subs.map(sg=>(
+          <button key={sg.id} onClick={()=>onSelect(sg)}
+            style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",
+              background:"var(--surface2)",border:`1.5px solid ${sg.color}45`,borderRadius:10,
+              cursor:"pointer",width:"100%",textAlign:"left",transition:"all .15s"}}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor=sg.color;e.currentTarget.style.background="var(--surface3)";}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor=`${sg.color}45`;e.currentTarget.style.background="var(--surface2)";}}>
+            <div style={{width:10,height:10,borderRadius:"50%",background:sg.color,flexShrink:0}}/>
+            <span style={{fontWeight:600,fontSize:14,color:"var(--text)",flex:1}}>{sg.nome}</span>
+          </button>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // CELLS — todas usando PortalDrop para dropdowns
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1294,7 +1369,7 @@ function ItemMenuOpt({icon,label,onClick,danger=false}) {
 }
 
 function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,
-  onDragStart,onDragOver,onDrop,onUpdateValue,onRespChange}) {
+  onDragStart,onDragOver,onDrop,onUpdateValue,onRespChange,sentToNegIds=new Set()}) {
   const [hov,setHov]=useState(false);
   const [menu,setMenu]=useState(false);
   const [menuPos,setMenuPos]=useState({top:0,right:0});
@@ -1314,15 +1389,24 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
     if(r) setMenuPos({top:r.bottom+4,right:window.innerWidth-r.right});
     setMenu(p=>!p);
   };
+  const alreadySent=sentToNegIds.has(item.id);
   const rowBg=selected?"var(--row-sel)":hov?"var(--surface2)":"var(--surface)";
   return (
     <tr draggable onDragStart={onDragStart} onDragOver={onDragOver} onDrop={onDrop}
       onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}
       style={{background:rowBg,transition:"background .1s"}}>
-      <td style={{width:52,textAlign:"center",borderLeft:`3px solid ${gc}`,verticalAlign:"middle",padding:"0 6px",flexShrink:0}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
-          <button onClick={onOpen} title="Atualizações"
-            style={{...T.iBtn,opacity:hov||selected?1:0.25,transition:"opacity .15s",fontSize:13,padding:"2px 3px",flexShrink:0}}>📝</button>
+      {/* Célula de controles — layout original preservado, badge via borda + dot */}
+      <td style={{width:52,textAlign:"center",
+        borderLeft:`3px solid ${alreadySent?"#059669":gc}`,
+        verticalAlign:"middle",padding:"0 6px",flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:5,position:"relative"}}>
+          <button onClick={onOpen} title={alreadySent?"Atualizações (já enviado para Negociações)":"Atualizações"}
+            style={{...T.iBtn,opacity:hov||selected?1:0.25,transition:"opacity .15s",fontSize:13,padding:"2px 3px",flexShrink:0,position:"relative"}}>
+            📝
+            {alreadySent&&<span style={{position:"absolute",top:-3,right:-3,width:7,height:7,
+              borderRadius:"50%",background:"#059669",border:"1.5px solid var(--surface)",
+              display:"block"}}/>}
+          </button>
           <input type="checkbox" checked={selected} onChange={onToggle}
             style={{cursor:"pointer",accentColor:"var(--blue)",width:13,height:13,flexShrink:0}}/>
         </div>
@@ -1344,7 +1428,11 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
             boxShadow:"0 12px 48px var(--shadowMd)",minWidth:240,padding:7}}>
             {onDupNeg&&<ItemMenuOpt icon="📋" label="Duplicar → Negociação" onClick={()=>{setMenu(false);onDupNeg();}}/>}
             {onMoveInativa&&<ItemMenuOpt icon="📁" label="Mover para Base Inativa" onClick={()=>{setMenu(false);onMoveInativa();}}/>}
-            {onSendToNeg&&<ItemMenuOpt icon="🤝" label="Enviar para Negociações" onClick={()=>{setMenu(false);onSendToNeg();}}/>}
+            {onSendToNeg&&(
+              alreadySent
+                ? <ItemMenuOpt icon="🔁" label="Reenviar para Negociações" onClick={()=>{setMenu(false);onSendToNeg();}}/>
+                : <ItemMenuOpt icon="🤝" label="Enviar para Negociações" onClick={()=>{setMenu(false);onSendToNeg();}}/>
+            )}
             {onSendToVendas&&<ItemMenuOpt icon="🏆" label="Enviar para Vendas" onClick={()=>{setMenu(false);onSendToVendas();}}/>}
             <div style={{height:1,background:"var(--border)",margin:"5px 0"}}/>
             <ItemMenuOpt icon="🗑️" label="Excluir item" danger onClick={()=>{setMenu(false);onDelete();}}/>
@@ -1461,7 +1549,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
   perms,currentUser,groupAccess,
   onToggleItem,onSelectAll,onAddItem,onDelGroup,onRenameGroup,onToggle,
   onOpenItem,onUpdateValue,onRespChange,onDelItem,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,
-  onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings}) {
+  onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,sentToNegIds=new Set()}) {
   const [renaming,setRenaming]=useState(false);
   const [gname,setGname]=useState(group.nome);
   const nref=useRef();
@@ -1614,6 +1702,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                         onDrop={e=>onItemDrop(e,item.id,group.id)}
                         onUpdateValue={(cid,v)=>onUpdateValue(item.id,cid,v)}
                         onRespChange={ids=>onRespChange(item.id,ids)}
+                        sentToNegIds={sentToNegIds}
                       />
                     ))}
                   </tbody>
@@ -1807,7 +1896,7 @@ function FilterPanel({board,allUsers,filters,setFilters,onClose}) {
 function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedItems,isMobile,
   perms,currentUser,groupAccess,canManageParent,
   onToggleItem,onSelectAll,onAddItem,onDelItem,onOpenItem,
-  onUpdateValue,onRespChange,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,
+  onUpdateValue,onRespChange,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,sentToNegIds=new Set(),
   onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,
   onRenameSubGroup,onDelSubGroup,onEditParent,onDelParent}) {
 
@@ -1878,6 +1967,7 @@ function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedIt
               onDupNeg={onDupNeg?item=>onDupNeg(sg.id,item):null}
               onSendToNeg={onSendToNeg?item=>onSendToNeg(sg.id,item):null}
               onSendToVendas={onSendToVendas?item=>onSendToVendas(sg.id,item):null}
+              sentToNegIds={sentToNegIds}
               onDragStart={onDragStart} onDragOver={e=>onDragOver(e,sg.id)} onDrop={e=>onDrop(e,sg.id)}
               onItemDragOver={onItemDragOver} onItemDrop={onItemDrop}
               onGroupSettings={null}/>
@@ -1975,6 +2065,8 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
   const [dragOverGroup,setDragOverGroup]=useState(null);
   const [confirmM,setConfirmM]=useState(null);
   const [groupSelM,setGroupSelM]=useState(null);
+  const [sendToNegM,setSendToNegM]=useState(null);
+  const [sentToNegIds,setSentToNegIds]=useState(new Set());
   // Permissões de grupo: map groupId → [userId, ...]
   const [groupAccess,setGroupAccess]=useState({});
   // Modal de criação/configurações de grupo
@@ -2019,6 +2111,19 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
       items:(itens||[]).filter(i=>i.group_id===g.id).map(i=>({...i,values:vMap[i.id]||{},responsibles:rMap[i.id]||[],updates:[]}))
     }));
     setBoard({...bData,columns,groups});
+
+    // Detecta quais itens do Pré-Vendas já foram enviados para Negociações
+    // via origin_item_id — vínculo estrutural permanente, imune a edições de campos
+    if(bData?.nome==="Pré - Vendas"&&ids.length){
+      const {data:linked}=await db.from("items")
+        .select("origin_item_id")
+        .in("origin_item_id",ids)
+        .not("origin_item_id","is",null);
+      setSentToNegIds(new Set((linked||[]).map(r=>r.origin_item_id)));
+    }else{
+      setSentToNegIds(new Set());
+    }
+
     setLoading(false);
   },[]);
 
@@ -2319,24 +2424,27 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
     });
   };
 
-  // ── Enviar para Negociações (Pré-Vendas → Negociações, todos os usuários)
+  // ── Enviar para Negociações (Pré-Vendas → Negociações) — modal 2 etapas
   const sendToNeg=async(gid,item)=>{
     const negBoard=boards.find(b=>b.nome==="Negociações"||b.nome==="🤝 Negociações");
     if(!negBoard){toast("Quadro 'Negociações' não encontrado. Verifique o nome exato.","error");return;}
     const {data:ngs}=await db.from("groups").select("*").eq("board_id",negBoard.id).order("ordem");
     if(!ngs?.length){toast("Nenhum grupo em Negociações","error");return;}
-    setGroupSelM({title:"Enviar para Negociações — escolha o grupo",groups:ngs,
+    setSendToNegM({
+      groups:ngs,
       onSelect:async tg=>{
-        const {data:ni}=await db.from("items").insert({board_id:negBoard.id,group_id:tg.id,ordem:9999}).select().single();
-        if(!ni){toast("Erro ao criar item","error");setGroupSelM(null);return;}
+        setSendToNegM(null);
+        const {data:ni}=await db.from("items").insert({board_id:negBoard.id,group_id:tg.id,ordem:9999,origin_item_id:item.id}).select().single();
+        if(!ni){toast("Erro ao criar item","error");return;}
         const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",negBoard.id);
         await copyMatchingValues(item.id,board.columns,ni.id,tgtCols||[]);
         if(item.responsibles?.length) await db.from("item_responsables").insert(item.responsibles.map(uid=>({item_id:ni.id,user_id:uid})));
         await copyUpdates(item.id,ni.id);
         bump(negBoard.id,1);
-        toast("Lead enviado para Negociações!");
-        setGroupSelM(null);
         await logAct(currentUser?.id,wsId,"item",ni.id,"created",{via:"sendToNeg",from:item.id});
+        // Atualiza estado local imediatamente — na próxima carga o cruzamento confirma automaticamente
+        setSentToNegIds(prev=>new Set([...prev,item.id]));
+        toast("✅ Lead enviado para Negociações!");
       }
     });
   };
@@ -2519,9 +2627,9 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
   const toggleItem=id=>setSelected(s=>{const n=new Set(s);n.has(id)?n.delete(id):n.add(id);return n;});
   const selectAll=(items,on)=>setSelected(s=>{const n=new Set(s);items.forEach(i=>on?n.add(i.id):n.delete(i.id));return n;});
   // Botões contextuais por quadro
-  const canActions       = board&&["Prospecção Fria","Tráfego"].includes(board.nome); // mover inativa + dup negoc
-  const isPreVendas      = board?.nome==="Pré-Vendas";        // botão → Negociações (todos)
+  const isPreVendas      = board?.nome==="Pré - Vendas";     // botão → Negociações (todos)
   const isNegociacoes    = board?.nome==="Negociações";       // botão → Vendas (sendToVendas)
+  const canActions       = isPreVendas;                       // mover inativa habilitado no Pré-Vendas
 
   // ── Hierarquia de grupos
   const canManageParent=perms.all||perms.manageBoards||["administrador","ceo","gerente_comercial"].includes(perms.slug);
@@ -2637,9 +2745,10 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
                 onUpdateValue={(iid,gid,cid,v)=>updateValue(iid,gid,cid,v)}
                 onRespChange={(iid,gid,ids)=>updateResp(iid,gid,ids)}
                 onMoveInativa={canActions?(gid,item)=>moveInativa(gid,item):null}
-                onDupNeg={canActions?(gid,item)=>dupNeg(gid,item):null}
+                onDupNeg={null}
                 onSendToNeg={isPreVendas?(gid,item)=>sendToNeg(gid,item):null}
                 onSendToVendas={isNegociacoes&&perms.sendToVendas?(gid,item)=>sendToVendas(gid,item):null}
+                sentToNegIds={sentToNegIds}
                 onDragStart={handleDragStart}
                 onDragOver={(e,gid)=>handleGroupDragOver(e,gid)}
                 onDrop={(e,gid)=>handleGroupDrop(e,gid)}
@@ -2663,9 +2772,10 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
                 onRespChange={(iid,ids)=>updateResp(iid,group.id,ids)}
                 onDelItem={iid=>setConfirmM({title:"Excluir item",danger:true,message:"Excluir permanentemente?",onConfirm:()=>{delItem(group.id,iid);setConfirmM(null);}})}
                 onMoveInativa={canActions?item=>moveInativa(group.id,item):null}
-                onDupNeg={canActions?item=>dupNeg(group.id,item):null}
+                onDupNeg={null}
                 onSendToNeg={isPreVendas?item=>sendToNeg(group.id,item):null}
                 onSendToVendas={isNegociacoes&&perms.sendToVendas?item=>sendToVendas(group.id,item):null}
+                sentToNegIds={sentToNegIds}
                 onDragStart={handleDragStart} onDragOver={e=>handleGroupDragOver(e,group.id)} onDrop={e=>handleGroupDrop(e,group.id)}
                 onItemDragOver={handleItemDragOver} onItemDrop={handleItemDrop}
                 onGroupSettings={perms.isFull||perms.all?()=>setGroupSettingsM(group):null}
@@ -2734,6 +2844,7 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
 
       {confirmM&&<ConfirmModal title={confirmM.title} message={confirmM.message} danger={confirmM.danger} onConfirm={confirmM.onConfirm} onCancel={()=>setConfirmM(null)}/>}
       {groupSelM&&<GroupSelectorModal title={groupSelM.title} groups={groupSelM.groups} onSelect={groupSelM.onSelect} onCancel={()=>setGroupSelM(null)}/>}
+      {sendToNegM&&<SendToNegModal groups={sendToNegM.groups} onSelect={sendToNegM.onSelect} onCancel={()=>setSendToNegM(null)}/>}
       {groupCreateM&&<GroupCreateModal allUsers={allUsers} onSave={addGroup} onCancel={()=>setGroupCreateM(false)}/>}
       {groupSettingsM&&<GroupSettingsModal group={groupSettingsM} allUsers={allUsers}
         currentAccess={groupAccess[groupSettingsM.id]||[]}
@@ -2744,9 +2855,13 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
         items={getSelectedItems()}
         srcBoard={board}
         allBoards={boards}
-        onMove={(destBid)=>{
+        onMove={(destBid,movedItemIds)=>{
           const cnt=[...selected].length;
           setMoveItemsM(false);
+          // Se destino é Negociações, atualiza badges localmente
+          if(movedItemIds?.length){
+            setSentToNegIds(prev=>new Set([...prev,...movedItemIds]));
+          }
           setSelected(new Set());
           bump(destBid,cnt);
           toast(`${cnt} item(s) copiado(s) com sucesso!`);
@@ -3114,12 +3229,29 @@ function MoveItemsModal({items,srcBoard,allBoards,onMove,onCancel}) {
   const [destGroupId,setDestGroupId]=useState("");
   const [loading,setLoading]=useState(false);
   const [moving,setMoving]=useState(false);
+  // Para Negociações: picker em 2 etapas
+  const [negStep,setNegStep]=useState(1);   // 1=closer, 2=subgrupo
+  const [negParent,setNegParent]=useState(null);
+
+  const destBoard=allBoards.find(b=>b.id===destBoardId);
+  const isNeg=destBoard?.nome==="Negociações";
+  const negParents=destGroups.filter(g=>g.is_parent);
+  const negChildren=pid=>destGroups.filter(g=>g.parent_group_id===pid);
+  const closerLabel=nome=>(nome||"").replace(/Closer\s*[-\u2013]\s*/i,"").trim();
+  const getInitials=nome=>closerLabel(nome).split(" ").slice(0,2).map(p=>p[0]||"").join("").toUpperCase();
 
   useEffect(()=>{
-    if(!destBoardId){setDestGroups([]);setDestGroupId("");return;}
+    if(!destBoardId){setDestGroups([]);setDestGroupId("");setNegStep(1);setNegParent(null);return;}
     setLoading(true);
     db.from("groups").select("*").eq("board_id",destBoardId).order("ordem")
-      .then(({data})=>{setDestGroups(data||[]);setDestGroupId(data?.[0]?.id||"");setLoading(false);});
+      .then(({data})=>{
+        setDestGroups(data||[]);
+        setDestGroupId("");
+        setNegStep(1);setNegParent(null);
+        if(!allBoards.find(b=>b.id===destBoardId)?.nome?.includes("Negociações"))
+          setDestGroupId(data?.[0]?.id||"");
+        setLoading(false);
+      });
   },[destBoardId]);
 
   const otherBoards=allBoards.filter(b=>b.id!==srcBoard.id);
@@ -3127,28 +3259,23 @@ function MoveItemsModal({items,srcBoard,allBoards,onMove,onCancel}) {
   const doMove=async()=>{
     if(!destBoardId||!destGroupId) return;
     setMoving(true);
-    const destBoard=allBoards.find(b=>b.id===destBoardId);
     const {data:destCols}=await db.from("columns").select("*").eq("board_id",destBoardId);
-
-    // Match columns by name+type
     const matchCols=(srcCols,tgtCols)=>{
-      const map={}; // srcColId → tgtColId
+      const map={};
       for(const sc of srcCols){
         const tc=tgtCols.find(c=>c.nome===sc.nome&&c.tipo===sc.tipo);
         if(tc) map[sc.id]=tc.id;
       }
       return map;
     };
-    const colMap=matchCols(srcBoard.columns, destCols||[]);
-
+    const colMap=matchCols(srcBoard.columns,destCols||[]);
+    const isNegDest=destBoard?.nome==="Negociações";
     for(const item of items){
-      // Create new item in destination
       const {data:ni}=await db.from("items")
-        .insert({board_id:destBoardId,group_id:destGroupId,ordem:9999})
+        .insert({board_id:destBoardId,group_id:destGroupId,ordem:9999,
+          ...(isNegDest?{origin_item_id:item.id}:{})})
         .select().single();
       if(!ni) continue;
-
-      // Copy matching values
       const {data:vals}=await db.from("item_values").select("*").eq("item_id",item.id);
       const toInsert=[];
       for(const v of vals||[]){
@@ -3156,23 +3283,83 @@ function MoveItemsModal({items,srcBoard,allBoards,onMove,onCancel}) {
         if(tgtId) toInsert.push({item_id:ni.id,column_id:tgtId,value:v.value});
       }
       if(toInsert.length) await db.from("item_values").insert(toInsert);
-
-      // Copy responsibles
       if(item.responsibles?.length)
         await db.from("item_responsables").insert(item.responsibles.map(uid=>({item_id:ni.id,user_id:uid})));
-
-      // Copy updates
       const {data:upds}=await db.from("item_updates").select("*").eq("item_id",item.id);
       if(upds?.length)
         await db.from("item_updates").insert(upds.map(u=>({item_id:ni.id,content:u.content,created_by:u.created_by})));
     }
-
     setMoving(false);
-    onMove(destBoardId);
+    // Passa IDs dos itens originais do Pré-Vendas quando destino é Negociações
+    onMove(destBoardId, isNegDest?items.map(i=>i.id):null);
+  };
+
+  // Sub-picker de Negociações inline dentro do modal
+  const NegPicker=()=>{
+    if(loading) return <div style={{padding:"10px 0",color:"var(--text3)",fontSize:13}}>Carregando grupos…</div>;
+    if(negStep===1) return (
+      <div style={{display:"flex",flexDirection:"column",gap:8,marginTop:4}}>
+        {negParents.map(p=>{
+          const subs=negChildren(p.id);
+          return (
+            <button key={p.id} onClick={()=>{setNegParent(p);setNegStep(2);setDestGroupId("");}}
+              style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",
+                background:"var(--surface2)",border:`2px solid ${p.color}35`,borderRadius:10,
+                cursor:"pointer",width:"100%",textAlign:"left",transition:"all .15s"}}
+              onMouseEnter={e=>{e.currentTarget.style.borderColor=p.color;e.currentTarget.style.background="var(--surface3)";}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor=`${p.color}35`;e.currentTarget.style.background="var(--surface2)";}}>
+              <div style={{width:38,height:38,borderRadius:"50%",background:p.color,flexShrink:0,
+                display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:14,color:"#fff"}}>
+                {getInitials(p.nome)}
+              </div>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:700,fontSize:14,color:"var(--text)"}}>{closerLabel(p.nome)}</div>
+                <div style={{fontSize:11,color:"var(--text3)"}}>{subs.map(s=>s.nome).join(" · ")}</div>
+              </div>
+              <span style={{fontSize:18,color:p.color,opacity:.6}}>›</span>
+            </button>
+          );
+        })}
+      </div>
+    );
+    const subs=negChildren(negParent.id);
+    return (
+      <div>
+        <button onClick={()=>{setNegStep(1);setNegParent(null);setDestGroupId("");}}
+          style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"8px 12px",
+            background:`${negParent.color}15`,border:`1.5px solid ${negParent.color}40`,borderRadius:8,
+            cursor:"pointer",marginBottom:10,textAlign:"left"}}>
+          <span style={{fontSize:15,color:negParent.color}}>←</span>
+          <div style={{width:28,height:28,borderRadius:"50%",background:negParent.color,flexShrink:0,
+            display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:12,color:"#fff"}}>
+            {getInitials(negParent.nome)}
+          </div>
+          <div>
+            <div style={{fontWeight:700,fontSize:13,color:"var(--text)"}}>{closerLabel(negParent.nome)}</div>
+            <div style={{fontSize:11,color:"var(--text3)"}}>Escolha o sub-grupo</div>
+          </div>
+        </button>
+        <div style={{display:"flex",flexDirection:"column",gap:7}}>
+          {subs.map(sg=>(
+            <button key={sg.id} onClick={()=>setDestGroupId(sg.id)}
+              style={{display:"flex",alignItems:"center",gap:10,padding:"11px 14px",
+                background:destGroupId===sg.id?`${sg.color}20`:"var(--surface2)",
+                border:`1.5px solid ${destGroupId===sg.id?sg.color:`${sg.color}45`}`,borderRadius:9,
+                cursor:"pointer",width:"100%",textAlign:"left",transition:"all .15s"}}
+              onMouseEnter={e=>{if(destGroupId!==sg.id){e.currentTarget.style.borderColor=sg.color;e.currentTarget.style.background="var(--surface3)";}}}
+              onMouseLeave={e=>{if(destGroupId!==sg.id){e.currentTarget.style.borderColor=`${sg.color}45`;e.currentTarget.style.background="var(--surface2)";}}} >
+              <div style={{width:10,height:10,borderRadius:"50%",background:sg.color,flexShrink:0}}/>
+              <span style={{fontWeight:600,fontSize:13,color:"var(--text)",flex:1}}>{sg.nome}</span>
+              {destGroupId===sg.id&&<span style={{color:sg.color,fontWeight:700,fontSize:13}}>✓</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
   };
 
   return (
-    <Modal title={`Mover ${items.length} item(s) para outro quadro`} onClose={onCancel} width={480}
+    <Modal title={`📦 Mover ${items.length} item(s) para outro quadro`} onClose={onCancel} width={490}
       footer={<>
         <button onClick={onCancel} style={{...T.btn,background:"var(--surface3)",color:"var(--text)"}}>Cancelar</button>
         <button onClick={doMove} disabled={!destBoardId||!destGroupId||moving}
@@ -3193,20 +3380,25 @@ function MoveItemsModal({items,srcBoard,allBoards,onMove,onCancel}) {
         {otherBoards.map(b=><option key={b.id} value={b.id}>{b.icon||"📋"} {b.nome}</option>)}
       </select>
 
-      <label style={T.lbl}>Grupo de destino</label>
-      {loading
-        ? <div style={{padding:"10px 0",color:"var(--text3)",fontSize:13}}>Carregando grupos…</div>
-        : <select value={destGroupId} onChange={e=>setDestGroupId(e.target.value)}
-            style={{...T.inp}} disabled={!destBoardId}>
-            <option value="">— Selecionar grupo —</option>
-            {destGroups.map(g=><option key={g.id} value={g.id}>{g.nome}</option>)}
-          </select>
-      }
-
-      {destBoardId&&!loading&&(
-        <p style={{fontSize:11,color:"var(--text3)",marginTop:12,lineHeight:1.6}}>
-          Os itens originais não serão removidos. Atualizações e responsáveis também serão copiados.
-        </p>
+      {destBoardId&&(
+        <>
+          <label style={{...T.lbl,marginBottom:10}}>
+            {isNeg?"Escolha o Closer e sub-grupo":"Grupo de destino"}
+          </label>
+          {isNeg
+            ? <NegPicker/>
+            : loading
+              ? <div style={{padding:"10px 0",color:"var(--text3)",fontSize:13}}>Carregando grupos…</div>
+              : <select value={destGroupId} onChange={e=>setDestGroupId(e.target.value)}
+                  style={T.inp} disabled={!destBoardId}>
+                  <option value="">— Selecionar grupo —</option>
+                  {destGroups.map(g=><option key={g.id} value={g.id}>{g.nome}</option>)}
+                </select>
+          }
+          {!isNeg&&<p style={{fontSize:11,color:"var(--text3)",marginTop:12,lineHeight:1.6}}>
+            Os itens originais não serão removidos. Atualizações e responsáveis também serão copiados.
+          </p>}
+        </>
       )}
     </Modal>
   );
@@ -3946,12 +4138,14 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
       let itemQ=db.from("items").select("id,board_id,created_at").in("board_id",boardIds);
       if(filterMode==="month"&&selMonth){
         const[y,m]=selMonth.split("-");
-        const start=`${y}-${m}-01T00:00:00.000Z`;
-        const endDate=new Date(parseInt(y),parseInt(m),1);
-        itemQ=itemQ.gte("created_at",start).lt("created_at",endDate.toISOString());
+        // Usa meia-noite LOCAL (igual ao inPeriod) para consistência de timezone
+        const startLocal=new Date(parseInt(y),parseInt(m)-1,1);
+        const endLocal=new Date(parseInt(y),parseInt(m),1);
+        itemQ=itemQ.gte("created_at",startLocal.toISOString()).lt("created_at",endLocal.toISOString());
       }else if(filterMode==="range"&&rangeStart&&rangeEnd){
         itemQ=itemQ.gte("created_at",rangeStart+"T00:00:00Z").lte("created_at",rangeEnd+"T23:59:59Z");
       }
+      // filterMode==="all": sem filtro, busca todos
       const{data:items}=await itemQ.order("created_at",{ascending:true});
 
       // Todos negociações (sem filtro) para proposta na rua
@@ -4029,6 +4223,7 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
 
     // Função de filtro de período
     const inPeriod=it=>{
+      if(filterMode==="all") return true;
       if(filterMode==="month"&&selMonth){
         const[y,m]=selMonth.split("-");
         const s=new Date(parseInt(y),parseInt(m)-1,1);
@@ -4039,7 +4234,8 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
         const s=new Date(rangeStart);const e=new Date(rangeEnd+"T23:59:59Z");
         const d=new Date(it.created_at);return d>=s&&d<=e;
       }
-      return true;
+      // filterMode definido mas sem parâmetros suficientes → não exibe nada
+      return false;
     };
 
     // Conjuntos únicos por board (rawItems já está deduplicado)
@@ -4049,7 +4245,7 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
     const negFilt  = rawItems.filter(i=>i.board_id===negB?.id && inPeriod(i) && isPreenchido(i.id));
     const preAll   = rawItems.filter(i=>i.board_id===preB?.id && isPreenchido(i.id));   // sem filtro — MQL total
     const preFilt  = rawItems.filter(i=>i.board_id===preB?.id && inPeriod(i) && isPreenchido(i.id));
-    const venAll8m = rawItems.filter(i=>i.board_id===venB?.id && isPreenchido(i.id));   // sem filtro — gráfico 8 meses
+    const venAll8m = rawItems.filter(i=>i.board_id===venB?.id && isPreenchido(i.id));   // sem filtro data — gráfico 8 meses
 
     // ── Métricas financeiras (todas vindas do quadro Vendas) ──────────────────
     const receitaEfetiva=venFilt.reduce((s,it)=>s+(parseFloat(gV(it.id,venValC?.id))||0),0);
@@ -4064,8 +4260,8 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
     // Valor médio fechado = média das vendas no board Vendas (não Negociações)
     const valMedioFechados=venComValor.length>0?receitaEfetiva/venComValor.length:0;
 
-    // ── Proposta na rua (estado atual, todos, sem filtro data) ────────────────
-    const propostaNaRua=negAll.filter(it=>["Proposta Enviada","Proposta na Rua"].includes(gV(it.id,negEtapaC?.id)||""))
+    // ── Proposta na rua (estado atual = Negociando, todos, sem filtro data) ─────
+    const propostaNaRua=negAll.filter(it=>(gV(it.id,negEtapaC?.id)||"")==="Negociando")
       .reduce((s,it)=>s+(parseFloat(gV(it.id,negValC?.id))||0),0);
 
     // ── Negócios fechados em Negociações (para funil) ─────────────────────────
@@ -4132,7 +4328,7 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
       propostaNaRua,etapasData,origemData,
       mqlQ,mqlDQ,receitaMesData,
       totalLeads,taxaConversao,
-      venFiltLen:venFilt.length,
+      venFiltLen:venComValor.length,
       negFiltLen:negFilt.length,
       preAllLen:preAll.length
     };
@@ -4226,7 +4422,7 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
         {/* KPIs */}
         <div style={{display:"grid",gridTemplateColumns:gridCols,gap:12,marginBottom:16}}>
           <KpiCard title="MRR" value={fmtBRL(metrics.mrr||0)} icon="🔄" color="#059669" sub="Média recorrente mensal"/>
-          <KpiCard title="Proposta na Rua" value={fmtBRL(metrics.propostaNaRua||0)} icon="📤" color="#d97706" sub="Propostas em aberto (total)" badge={{label:"Ativo",color:"#d97706",bg:"#d9770620"}}/>
+          <KpiCard title="Proposta na Rua" value={fmtBRL(metrics.propostaNaRua||0)} icon="📤" color="#d97706" sub="Negociando (em aberto, todos)" badge={{label:"Ativo",color:"#d97706",bg:"#d9770620"}}/>
           <KpiCard title="Ticket Médio" value={fmtBRL(metrics.ticketMedio||0)} icon="💰" color="#7c3aed" sub={`${metrics.venFiltLen||0} vendas no período`}/>
           <KpiCard title="Valor Médio Fechado" value={fmtBRL(metrics.valMedioFechados||0)} icon="🤝" color="#0891b2" sub={`${metrics.negFechados||0} negócios fechados`}/>
           <KpiCard title="Total Leads" value={metrics.totalLeads||0} icon="👥" color="#3145FF" sub="Pré-Vendas no período"/>
@@ -4303,9 +4499,10 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
               const negB2=boards.find(b=>b.nome==="Negociações");
               const venB2=boards.find(b=>b.nome==="Vendas");
               const inPeriod=item=>{
+                if(filterMode==="all") return true;
                 if(filterMode==="month"&&selMonth){const[y,m]=selMonth.split("-");const s=new Date(parseInt(y),parseInt(m)-1,1);const e=new Date(parseInt(y),parseInt(m),1);const d=new Date(item.created_at);return d>=s&&d<e;}
                 if(filterMode==="range"&&rangeStart&&rangeEnd){const s=new Date(rangeStart);const e=new Date(rangeEnd+"T23:59:59Z");const d=new Date(item.created_at);return d>=s&&d<=e;}
-                return true;
+                return false;
               };
               const steps=[
                 {label:"Pré-Vendas (Leads)",value:rawItems.filter(i=>i.board_id===preB2?.id&&inPeriod(i)).length,color:"#3145FF"},
