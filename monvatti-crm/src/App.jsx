@@ -28,6 +28,30 @@ const sendEmailJS = async (params) => {
     return {ok:false, error:err};
   }
 };
+// ─── CALLMEBOT — notificação WhatsApp para múltiplos números (sem backend) ───
+// Para ativar cada número:
+//   1. Salve +34 694 26 48 06 na agenda como "CallMeBot"
+//   2. Envie "I allow callmebot to send me messages" via WhatsApp para esse número
+//   3. Você receberá sua apikey em segundos — preencha abaixo
+const WA_DESTINATARIOS = [
+  { nome: "Yuri",     phone: "554899706309", apikey: "6328106"          },
+  { nome: "Mauricio", phone: "",             apikey: ""                 }, // ← preencher
+  { nome: "Alice",    phone: "",             apikey: ""                 }, // ← preencher
+];
+const sendWhatsApp = async (text) => {
+  const ativos = WA_DESTINATARIOS.filter(d => d.phone && d.apikey);
+  if (!ativos.length) return { ok: false, sent: 0 };
+  const resultados = await Promise.allSettled(
+    ativos.map(d =>
+      fetch(`https://api.callmebot.com/whatsapp.php?phone=${d.phone}&text=${encodeURIComponent(text)}&apikey=${d.apikey}`)
+        .then(r => ({ nome: d.nome, ok: r.ok }))
+        .catch(() => ({ nome: d.nome, ok: false }))
+    )
+  );
+  const enviados = resultados.filter(r => r.status === "fulfilled" && r.value.ok).map(r => r.value.nome);
+  return { ok: enviados.length > 0, sent: enviados.length, total: ativos.length, enviados };
+};
+
 import * as XLSX from "https://esm.sh/xlsx@0.18.5";
 import { jsPDF } from "https://esm.sh/jspdf@2.5.1";
 import autoTable from "https://esm.sh/jspdf-autotable@3.8.3";
@@ -39,8 +63,8 @@ const db = createClient(SUPA_URL, SUPA_KEY);
 
 // ─── THEME CSS (injected once) ───────────────────────────────────────────────
 const THEME_CSS = `
-:root{--bg:#F1F2F6;--surface:#FFFFFF;--surface2:#FAFAFA;--surface3:#F3F4F6;
---text:#2B333B;--text2:#6B7280;--text3:#9CA3AF;--border:#E5E7EB;--borderStrong:#D1D5DB;
+:root{--bg:#DDE0EA;--surface:#FFFFFF;--surface2:#EFF1F7;--surface3:#E3E6EF;
+--text:#161E2D;--text2:#3D4A5C;--text3:#6B7A90;--border:#B8BECE;--borderStrong:#9AA3B5;
 --sidebar:#2B333B;--sidebarText:rgba(255,255,255,0.75);--sidebarActive:rgba(255,255,255,0.18);
 --blue:#001AD8;--alt:#3145FF;--shadow:rgba(0,0,0,0.08);--shadowMd:rgba(0,0,0,0.14);--row-sel:#dbeafe;}
 [data-dark=true]{--bg:#0D0F14;--surface:#1A1D27;--surface2:#1E2233;--surface3:#252A3E;
@@ -595,16 +619,29 @@ function CurrencyCell({value,onChange}) {
 function StatusCell({value,options=[],onChange}) {
   const resolved = useMemo(()=>resolveOpts(options),[options]);
   const current  = resolved.find(o=>o.label===value)||null;
-  // Grid quando há muitas opções (>= 5)
   const useGrid  = resolved.length >= 5;
-  const minW     = useGrid ? Math.min(480, Math.max(280, resolved.length * 48)) : 220;
+  const minW     = useGrid ? Math.min(480, Math.max(280, resolved.length * 48)) : 230;
 
   const trigger = (
-    <div style={{padding:"5px 4px",userSelect:"none",minWidth:120}}>
+    <div style={{padding:"4px 4px",userSelect:"none",minWidth:120}}>
       {current
-        ? <Badge value={current.label} color={current.color}/>
-        : <span style={{fontSize:12,color:"var(--text3)",padding:"4px 11px",border:"1px dashed var(--border)",
-            borderRadius:6,display:"inline-block",whiteSpace:"nowrap",cursor:"pointer"}}>Selecionar ▾</span>
+        ? <div style={{
+            display:"inline-flex",alignItems:"center",gap:6,
+            padding:"4px 10px 4px 8px",borderRadius:6,cursor:"pointer",
+            background:`${current.color}18`,border:`1.5px solid ${current.color}50`,
+            transition:"all .15s",maxWidth:"100%",overflow:"hidden"}}>
+            <div style={{width:7,height:7,borderRadius:"50%",background:current.color,flexShrink:0,
+              boxShadow:`0 0 5px ${current.color}80`}}/>
+            <span style={{fontSize:11,fontWeight:700,color:current.color,
+              whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",letterSpacing:.2}}>
+              {current.label}
+            </span>
+          </div>
+        : <span style={{fontSize:11,color:"var(--text3)",padding:"4px 10px",
+            border:"1.5px dashed var(--border)",borderRadius:6,
+            display:"inline-flex",alignItems:"center",gap:5,cursor:"pointer",whiteSpace:"nowrap"}}>
+            <span style={{opacity:.5}}>◯</span> Selecionar
+          </span>
       }
     </div>
   );
@@ -665,7 +702,7 @@ function UserCell({value=[],allUsers=[],onChange}) {
       {!sel.length
         ? <div style={{width:28,height:28,borderRadius:"50%",border:"1.5px dashed var(--border)",
             display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,color:"var(--text3)"}}>+</div>
-        : <div style={{display:"flex",alignItems:"center"}}>{sel.map(u=><Avatar key={u.id} user={u} size={28}/>)}</div>
+        : <div style={{display:"flex",alignItems:"center",maxWidth:68,overflow:"hidden",flexShrink:0}}>{sel.slice(0,3).map((u,idx)=><div key={u.id} style={{marginLeft:idx?-7:0,flexShrink:0,zIndex:10-idx,borderRadius:"50%",border:"2px solid var(--surface)"}}><Avatar user={u} size={24}/></div>)}{sel.length>3&&<div style={{marginLeft:-7,width:24,height:24,borderRadius:"50%",background:"var(--surface3)",border:"2px solid var(--surface)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,color:"var(--text2)",flexShrink:0}}>+{sel.length-3}</div>}</div>
       }
     </div>
   );
@@ -1403,9 +1440,9 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
           <button onClick={onOpen} title={alreadySent?"Atualizações (já enviado para Negociações)":"Atualizações"}
             style={{...T.iBtn,opacity:hov||selected?1:0.25,transition:"opacity .15s",fontSize:13,padding:"2px 3px",flexShrink:0,position:"relative"}}>
             📝
-            {alreadySent&&<span style={{position:"absolute",top:-3,right:-3,width:7,height:7,
-              borderRadius:"50%",background:"#059669",border:"1.5px solid var(--surface)",
-              display:"block"}}/>}
+            {alreadySent&&<span title="Lead enviado para Negociações" style={{position:"absolute",top:-4,right:-4,width:10,height:10,
+              borderRadius:"50%",background:"#00C46A",border:"2px solid var(--surface)",
+              display:"block",boxShadow:"0 0 6px #00C46A90"}}/>}
           </button>
           <input type="checkbox" checked={selected} onChange={onToggle}
             style={{cursor:"pointer",accentColor:"var(--blue)",width:13,height:13,flexShrink:0}}/>
@@ -1549,7 +1586,8 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
   perms,currentUser,groupAccess,
   onToggleItem,onSelectAll,onAddItem,onDelGroup,onRenameGroup,onToggle,
   onOpenItem,onUpdateValue,onRespChange,onDelItem,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,
-  onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,sentToNegIds=new Set()}) {
+  onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,sentToNegIds=new Set(),
+  sortCfg={colId:null,dir:1},setSortCfg=()=>{}}) {
   const [renaming,setRenaming]=useState(false);
   const [gname,setGname]=useState(group.nome);
   const nref=useRef();
@@ -1633,14 +1671,34 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                         style={{cursor:"pointer",accentColor:"var(--blue)",width:13,height:13}}/>
                     </div>
                   </th>
-                  {columns.map(col=>(
-                    <th key={col.id} style={{padding:"7px 11px",textAlign:"left",fontWeight:700,fontSize:11,
-                      color:"var(--text3)",whiteSpace:"nowrap",borderRight:"1px solid var(--border)",
-                      textTransform:"uppercase",letterSpacing:.4,overflow:"hidden",textOverflow:"ellipsis",
-                      background:"var(--surface2)"}}>
-                      {col.nome}
-                    </th>
-                  ))}
+                  {columns.map(col=>{
+                    const isActive=sortCfg.colId===col.id;
+                    const isAsc=isActive&&sortCfg.dir===1;
+                    const isDesc=isActive&&sortCfg.dir===-1;
+                    const cycleSort=()=>{
+                      if(!isActive) setSortCfg({colId:col.id,dir:1});
+                      else if(isAsc) setSortCfg({colId:col.id,dir:-1});
+                      else setSortCfg({colId:null,dir:1});
+                    };
+                    return (
+                      <th key={col.id} onClick={cycleSort}
+                        style={{padding:"7px 11px",textAlign:"left",fontWeight:700,fontSize:11,
+                          color:isActive?"var(--blue)":"var(--text3)",whiteSpace:"nowrap",
+                          borderRight:"1px solid var(--border)",textTransform:"uppercase",letterSpacing:.4,
+                          overflow:"hidden",textOverflow:"ellipsis",background:"var(--surface2)",
+                          cursor:"pointer",userSelect:"none",transition:"color .15s"}}
+                        onMouseEnter={e=>{if(!isActive)e.currentTarget.style.color="var(--text2)";}}
+                        onMouseLeave={e=>{if(!isActive)e.currentTarget.style.color="var(--text3)";}}>
+                        <div style={{display:"flex",alignItems:"center",gap:4}}>
+                          <span style={{overflow:"hidden",textOverflow:"ellipsis"}}>{col.nome}</span>
+                          <div style={{display:"flex",flexDirection:"column",gap:0,flexShrink:0,lineHeight:.8}}>
+                            <span style={{fontSize:8,opacity:isAsc?1:.25,color:isActive?"var(--blue)":"var(--text3)"}}>▲</span>
+                            <span style={{fontSize:8,opacity:isDesc?1:.25,color:isActive?"var(--blue)":"var(--text3)"}}>▼</span>
+                          </div>
+                        </div>
+                      </th>
+                    );
+                  })}
                   <th style={{width:72,background:"var(--surface2)"}}/>
                 </tr>
               </tbody>
@@ -1897,10 +1955,14 @@ function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedIt
   perms,currentUser,groupAccess,canManageParent,
   onToggleItem,onSelectAll,onAddItem,onDelItem,onOpenItem,
   onUpdateValue,onRespChange,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,sentToNegIds=new Set(),
+  sortCfg={colId:null,dir:1},setSortCfg=()=>{},
   onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,
   onRenameSubGroup,onDelSubGroup,onEditParent,onDelParent}) {
 
   const [collapsed,setCollapsed]=useState(false);
+  // Estado local de colapso por sub-grupo (id → bool)
+  const [sgCollapsed,setSgCollapsed]=useState({});
+  const toggleSg=id=>setSgCollapsed(p=>({...p,[id]:!p[id]}));
   const [renaming,setRenaming]=useState(false);
   const [pgName,setPgName]=useState(parentGroup.nome);
   const nref=useRef();
@@ -1949,7 +2011,7 @@ function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedIt
       {!collapsed&&(
         <div style={{padding:"8px 12px 12px",background:"var(--bg)"}}>
           {subGroups.map(sg=>(
-            <Group key={sg.id} group={sg} columns={columns}
+            <Group key={sg.id} group={{...sg,collapsed:!!sgCollapsed[sg.id]}} columns={columns}
               items={sg.items||[]} isDraggingOver={false}
               allUsers={allUsers} selectedItems={selectedItems} isMobile={isMobile}
               perms={perms} currentUser={currentUser}
@@ -1958,7 +2020,7 @@ function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedIt
               onAddItem={()=>onAddItem(sg.id)}
               onDelGroup={()=>onDelSubGroup(sg.id)}
               onRenameGroup={n=>onRenameSubGroup(sg.id,n)}
-              onToggle={()=>{}}
+              onToggle={()=>toggleSg(sg.id)}
               onOpenItem={item=>onOpenItem(item,sg.id)}
               onUpdateValue={(iid,cid,v)=>onUpdateValue(iid,sg.id,cid,v)}
               onRespChange={(iid,ids)=>onRespChange(iid,sg.id,ids)}
@@ -1968,6 +2030,7 @@ function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedIt
               onSendToNeg={onSendToNeg?item=>onSendToNeg(sg.id,item):null}
               onSendToVendas={onSendToVendas?item=>onSendToVendas(sg.id,item):null}
               sentToNegIds={sentToNegIds}
+              sortCfg={sortCfg} setSortCfg={setSortCfg}
               onDragStart={onDragStart} onDragOver={e=>onDragOver(e,sg.id)} onDrop={e=>onDrop(e,sg.id)}
               onItemDragOver={onItemDragOver} onItemDrop={onItemDrop}
               onGroupSettings={null}/>
@@ -1995,7 +2058,7 @@ function ParentGroupModal({initial,allUsers,onSave,onCancel}) {
       onClose={onCancel}
       footer={<>
         <button onClick={onCancel} style={{...T.btn,background:"var(--surface3)",color:"var(--text2)",padding:"9px 20px",border:"1px solid var(--border)"}}>Cancelar</button>
-        <button onClick={()=>nome.trim()&&onSave({nome:nome.trim(),color,owner_id:ownerId||null})}
+        <button onClick={()=>nome.trim()&&onSave({...(initial?.id?{id:initial.id}:{}),nome:nome.trim(),color,owner_id:ownerId||null})}
           style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"9px 24px"}} disabled={!nome.trim()}>
           {isEdit?"Salvar":"Criar Grupo"}
         </button>
@@ -2058,6 +2121,7 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
   const [search,setSearch]=useState("");
   const [filters,setFilters]=useState({});
   const [showFilters,setShowFilters]=useState(false);
+  const [sortCfg,setSortCfg]=useState({colId:null,dir:1}); // dir: 1=asc, -1=desc
   const [showColMgr,setShowColMgr]=useState(false);
   const [showExport,setShowExport]=useState(false);
   const [selected,setSelected]=useState(new Set());
@@ -2536,27 +2600,113 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
         ].join("\n"),
       };
 
-      // Tenta envio automático via EmailJS
-      if(EMAILJS_KEY!=="YOUR_PUBLIC_KEY"){
-        const result = await sendEmailJS(emailParams);
-        if(result.ok){
-          toast("📧 E-mail de notificação enviado automaticamente!","success");
-          return;
-        }
-      }
+      // Mensagem WhatsApp — compacta e legível
+      const waMensagem = [
+        "🏆 *NOVA VENDA — Monvatti CRM*",
+        "",
+        `📋 *Lead:* ${leadNome}`,
+        `👤 *Registrado por:* ${vendedor?.nome||"Sistema"}`,
+        `📅 *Data/hora:* ${dataHora}`,
+        `📂 *Grupo:* ${grupo.nome}`,
+        "",
+        "📄 *Detalhes:*",
+        campos,
+        "",
+        "─────────────────────────",
+        "Monvatti CRM",
+      ].join("\n");
 
-      // Fallback: abre cliente de email apenas se EmailJS não estiver configurado
+      // Dispara email e WhatsApp em paralelo
+      const [emailResult, waResult] = await Promise.all([
+        EMAILJS_KEY!=="YOUR_PUBLIC_KEY" ? sendEmailJS(emailParams) : Promise.resolve({ok:false}),
+        sendWhatsApp(waMensagem),
+      ]);
+
+      const notices = [];
+      if(emailResult.ok) notices.push("📧 E-mail");
+      if(waResult.ok)    notices.push(`💬 WhatsApp (${waResult.enviados?.join(", ")})`);
+      if(notices.length){ toast(notices.join(" + ") + " enviado(s)!","success"); return; }
+
+      // Fallback mailto se nenhuma integração estiver ativa
       const subject=encodeURIComponent(emailParams.subject);
       const body=encodeURIComponent(emailParams.mensagem);
       window.open("mailto:yurifrancomonvatti@gmail.com?subject="+subject+"&body="+body,"_blank");
-      toast("📧 EmailJS não configurado — abrindo cliente de email. Configure EMAILJS_KEY no código.","warning");
+      toast("Configure EMAILJS_KEY ou WA_DESTINATARIOS para notificações automáticas.","warning");
     }catch(err){
       console.error("Erro ao enviar email:",err);
       toast("Erro ao enviar e-mail de notificação","error");
     }
   };
 
-  // ── Drag & drop com persistência de ordem
+  // ── Notificação em lote — agrupa múltiplos leads em 1 única mensagem
+  const sendVendasEmailBulk=async(items,grupo)=>{
+    if(!items?.length) return;
+    if(items.length===1){ await sendVendasEmail(items[0],grupo); return; }
+    try{
+      const nl="\n";
+      const sep="\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n";
+      const vendedor=allUsers.find(u=>u.id===currentUser?.id);
+      const dataHora=new Date().toLocaleString("pt-BR");
+      const resumos=items.map((item,idx)=>{
+        const leadNome=item.values?.[board.columns[0]?.id]||("Lead "+(idx+1));
+        const campos=board.columns
+          .filter(c=>c.tipo!=="calculated"&&c.tipo!=="user")
+          .map(c=>{ const v=item.values?.[c.id]; return v?("  "+c.nome+": "+v):null; })
+          .filter(Boolean).join(nl);
+        return ("*"+(idx+1)+". "+leadNome+"*"+nl+campos);
+      }).join(sep);
+      const waMensagem=[
+        "\uD83C\uDFC6 *"+items.length+" NOVAS VENDAS \u2014 Monvatti CRM*",
+        "",
+        "\uD83D\uDC64 *Registrado por:* "+(vendedor?.nome||"Sistema"),
+        "\uD83D\uDCC5 *Data/hora:* "+dataHora,
+        "\uD83D\uDCC2 *Grupo:* "+grupo.nome,
+        "",
+        "\uD83D\uDCC4 *Leads:*",
+        "",
+        resumos,
+        "",
+        "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+        "Monvatti CRM",
+      ].join(nl);
+      const emailMensagem=[
+        "Ol\u00E1 Yuri,","",
+        items.length+" novas vendas foram registradas no Monvatti CRM.","",
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501",
+        "\uD83C\uDFC6 "+items.length+" VENDAS CONFIRMADAS",
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501","",
+        "Data e hora: "+dataHora,
+        "Registrado por: "+(vendedor?.nome||"Sistema"),
+        "Grupo: "+grupo.nome,"",
+        resumos,"",
+        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501",
+        "Monvatti CRM",
+      ].join(nl);
+      const emailParams={
+        to_email:"yurifrancomonvatti@gmail.com",
+        reply_to:"yurifrancomonvatti@gmail.com",
+        subject:"\u2705 "+items.length+" Novas Vendas \u2014 "+dataHora,
+        vendedor:vendedor?.nome||"Sistema",
+        lead_nome:items.length+" leads",
+        data_hora:dataHora,
+        grupo:grupo.nome,
+        campos:resumos,
+        mensagem:emailMensagem,
+      };
+      const [emailResult,waResult]=await Promise.all([
+        EMAILJS_KEY!=="YOUR_PUBLIC_KEY"?sendEmailJS(emailParams):Promise.resolve({ok:false}),
+        sendWhatsApp(waMensagem),
+      ]);
+      const notices=[];
+      if(emailResult.ok) notices.push("\uD83D\uDCE7 E-mail");
+      if(waResult.ok)    notices.push("\uD83D\uDCAC WhatsApp ("+(waResult.enviados?.join(", "))+")");
+      if(notices.length) toast(notices.join(" + ")+" enviado(s)!","success");
+    }catch(err){
+      console.error("Erro ao enviar notificações em lote:",err);
+    }
+  };
+
+    // ── Drag & drop com persistência de ordem
   const handleDragStart=(e,item,gid)=>{setDragState({itemId:item.id,srcGroupId:gid,item});e.dataTransfer.effectAllowed="move";};
   const handleGroupDragOver=(e,gid)=>{e.preventDefault();setDragOverGroup(gid);};
   const handleGroupDrop=async(e,tgtGid)=>{
@@ -2592,7 +2742,30 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
   };
 
   // ── Filtros combinados
-  const applyFilters=items=>{
+  const sortItems=(items)=>{
+    const {colId,dir}=sortCfg;
+    if(!colId) return items;
+    return [...items].sort((a,b)=>{
+      // Ordenação por responsável
+      if(colId==="__resp__"){
+        const nameA=(allUsers.find(u=>a.responsibles?.[0]===u.id)?.nome||"").toLowerCase();
+        const nameB=(allUsers.find(u=>b.responsibles?.[0]===u.id)?.nome||"").toLowerCase();
+        return dir*(nameA<nameB?-1:nameA>nameB?1:0);
+      }
+      const vA=a.values?.[colId]; const vB=b.values?.[colId];
+      // Datas
+      if(vA&&vB&&String(vA).match(/^\d{4}-\d{2}-\d{2}/))
+        return dir*(new Date(vA)-new Date(vB));
+      // Números e moeda
+      const nA=parseFloat(vA); const nB=parseFloat(vB);
+      if(!isNaN(nA)&&!isNaN(nB)) return dir*(nA-nB);
+      // Texto e status
+      const sA=String(vA||"").toLowerCase(); const sB=String(vB||"").toLowerCase();
+      return dir*(sA<sB?-1:sA>sB?1:0);
+    });
+  };
+  const applyFilters=items=>sortItems(applyFiltersRaw(items));
+  const applyFiltersRaw=items=>{
     let r=items;
     if(search.trim()){
       const q=search.toLowerCase();
@@ -2639,10 +2812,11 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
     if(!board) return [];
 
     if(!isNegociacoes){
-      if(perms.all||perms.viewAll) return board.groups;
-      if(perms.slug==="sdr") return board.groups.filter(g=>g.owner_id===currentUser?.id);
-      if(perms.slug==="closer") return board.groups.filter(g=>(groupAccess[g.id]||[]).includes(currentUser?.id));
-      return board.groups;
+      let gs=board.groups;
+      if(perms.slug==="sdr") gs=gs.filter(g=>g.owner_id===currentUser?.id);
+      else if(perms.slug==="closer") gs=gs.filter(g=>(groupAccess[g.id]||[]).includes(currentUser?.id));
+      // Aplica filtro/busca nos itens — grupos com 0 resultados ficam com items=[]
+      return gs.map(g=>({...g,items:applyFilters(g.items||[])}));
     }
 
     // Para Negociações: retorna grupos mãe com seus sub-grupos embutidos
@@ -2674,7 +2848,7 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
     });
 
     return [...enriched,...legacyFiltered.map(g=>({...g,items:applyFilters(g.items||[])}))];
-  },[board,perms,currentUser,groupAccess,isNegociacoes,filters,search]);
+  },[board,perms,currentUser,groupAccess,isNegociacoes,filters,search,sortCfg]);
   const filterCount=(filters.status?.length||0)+(filters.resp?.length||0)+(filters.dateFrom?1:0)+(filters.dateTo?1:0)+(filters.month?1:0)+(search.trim()?1:0);
 
   if(loading) return <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}><Spinner size={40}/><span style={{color:"var(--text3)",fontSize:14}}>Carregando…</span></div>;
@@ -2711,7 +2885,7 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
             style={{...T.btn,background:filterCount>0?"var(--blue)":"var(--surface3)",color:filterCount>0?"#fff":"var(--text2)",padding:"8px 13px",fontSize:12}}>
             ⚙ {filterCount>0?`(${filterCount})`:"Filtros"}
           </button>
-          {perms.manageCols&&<button onClick={()=>setShowColMgr(true)} style={{...T.btn,background:"var(--surface3)",color:"var(--text2)",padding:"8px 13px",fontSize:12}}>⊞ Colunas</button>}
+                    {perms.manageCols&&<button onClick={()=>setShowColMgr(true)} style={{...T.btn,background:"var(--surface3)",color:"var(--text2)",padding:"8px 13px",fontSize:12}}>⊞ Colunas</button>}
           {perms.export&&<button onClick={()=>setShowExport(true)} style={{...T.btn,background:"var(--surface3)",color:"var(--text2)",padding:"8px 13px",fontSize:12}}>📥 Exportar</button>}
           {perms.createGroups&&<button onClick={()=>setGroupCreateM(true)} style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"8px 16px",fontSize:12}}>+ Grupo</button>}
         </>}
@@ -2724,7 +2898,19 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
 
       {/* Content */}
       <div style={{flex:1,overflowY:"auto",padding:isMobile?"8px 12px 120px":"8px 22px 120px"}}>
-        {visibleGroups.map(group=>(
+        {visibleGroups
+          .map(group=>{
+            // Quando há busca ou filtro ativos, remove sub-grupos vazios e grupos mãe completamente vazios
+            if(filterCount>0&&group._isParent){
+              const nonEmptySubs=(group.subGroups||[]).filter(sg=>(sg.items||[]).length>0);
+              if(!nonEmptySubs.length) return null;
+              return {...group,subGroups:nonEmptySubs};
+            }
+            if(filterCount>0&&!group._isParent&&(group.items||[]).length===0) return null;
+            return group;
+          })
+          .filter(Boolean)
+          .map(group=>(
           group._isParent
             ? <ParentGroupContainer key={group.id}
                 parentGroup={group}
@@ -2749,6 +2935,7 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
                 onSendToNeg={isPreVendas?(gid,item)=>sendToNeg(gid,item):null}
                 onSendToVendas={isNegociacoes&&perms.sendToVendas?(gid,item)=>sendToVendas(gid,item):null}
                 sentToNegIds={sentToNegIds}
+                sortCfg={sortCfg} setSortCfg={setSortCfg}
                 onDragStart={handleDragStart}
                 onDragOver={(e,gid)=>handleGroupDragOver(e,gid)}
                 onDrop={(e,gid)=>handleGroupDrop(e,gid)}
@@ -2759,7 +2946,7 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
                 onEditParent={pg=>setParentGroupM(pg)}
                 onDelParent={pgid=>delParentGroup(pgid)}/>
             : <Group key={group.id} group={group} columns={board.columns}
-                items={isNegociacoes?group.items:applyFilters(group.items)}
+                items={group.items}
                 isDraggingOver={dragOverGroup===group.id}
                 allUsers={allUsers} selectedItems={selected} isMobile={isMobile}
                 perms={perms} currentUser={currentUser}
@@ -2776,6 +2963,7 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
                 onSendToNeg={isPreVendas?item=>sendToNeg(group.id,item):null}
                 onSendToVendas={isNegociacoes&&perms.sendToVendas?item=>sendToVendas(group.id,item):null}
                 sentToNegIds={sentToNegIds}
+                sortCfg={sortCfg} setSortCfg={setSortCfg}
                 onDragStart={handleDragStart} onDragOver={e=>handleGroupDragOver(e,group.id)} onDrop={e=>handleGroupDrop(e,group.id)}
                 onItemDragOver={handleItemDragOver} onItemDrop={handleItemDrop}
                 onGroupSettings={perms.isFull||perms.all?()=>setGroupSettingsM(group):null}
@@ -2855,12 +3043,17 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
         items={getSelectedItems()}
         srcBoard={board}
         allBoards={boards}
-        onMove={(destBid,movedItemIds)=>{
+        onMove={async(destBid,movedItemIds,destGroup)=>{
           const cnt=[...selected].length;
           setMoveItemsM(false);
           // Se destino é Negociações, atualiza badges localmente
           if(movedItemIds?.length){
             setSentToNegIds(prev=>new Set([...prev,...movedItemIds]));
+          }
+          // Se destino é Vendas, dispara notificação agrupada (1 msg para N leads)
+          if(destGroup){
+            const movedItems=getSelectedItems();
+            await sendVendasEmailBulk(movedItems,destGroup);
           }
           setSelected(new Set());
           bump(destBid,cnt);
@@ -3290,8 +3483,11 @@ function MoveItemsModal({items,srcBoard,allBoards,onMove,onCancel}) {
         await db.from("item_updates").insert(upds.map(u=>({item_id:ni.id,content:u.content,created_by:u.created_by})));
     }
     setMoving(false);
+    const isVendasDest=destBoard?.nome==="Vendas";
+    const destGroupObj=destGroups.find(g=>g.id===destGroupId)||{nome:"Vendas"};
     // Passa IDs dos itens originais do Pré-Vendas quando destino é Negociações
-    onMove(destBoardId, isNegDest?items.map(i=>i.id):null);
+    // Passa destGroupObj quando destino é Vendas para o email ser disparado no BoardPage
+    onMove(destBoardId, isNegDest?items.map(i=>i.id):null, isVendasDest?destGroupObj:null);
   };
 
   // Sub-picker de Negociações inline dentro do modal
@@ -3602,9 +3798,9 @@ function Sidebar({boards,currentBoardId,currentUser,wsNome,dark,onToggleDark,per
         )}
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <Avatar user={currentUser} size={36}/>
-          <div style={{flex:1,minWidth:0}}>
+          <div style={{flex:1,minWidth:0,overflow:"hidden"}}>
             <div style={{fontSize:13,fontWeight:700,color:"#fff",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{currentUser?.nome}</div>
-            <div style={{fontSize:11,color:"rgba(255,255,255,.45)"}}>{currentUser?.email}</div>
+            <div style={{fontSize:11,color:"rgba(255,255,255,.45)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{currentUser?.email}</div>
           </div>
           <button onClick={onToggleDark} title={dark?"Modo claro":"Modo escuro"}
             style={{background:"none",border:"none",cursor:"pointer",fontSize:17,lineHeight:1}}>{dark?"☀️":"🌙"}</button>
@@ -4175,8 +4371,19 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
       setRawItems(uniqItems);
 
       if(uniqIds.length){
-        const chunks=[];for(let i=0;i<uniqIds.length;i+=500)chunks.push(uniqIds.slice(i,i+500));
-        const valsArr=await Promise.all(chunks.map(chunk=>db.from("item_values").select("item_id,column_id,value").in("item_id",chunk)));
+        // Busca item_values em chunks de 100 IDs por request com limit alto explícito
+        // para evitar o corte silencioso do Supabase (default 1000 linhas por query)
+        const CHUNK=100;
+        const chunks=[];
+        for(let i=0;i<uniqIds.length;i+=CHUNK) chunks.push(uniqIds.slice(i,i+CHUNK));
+        const valsArr=await Promise.all(
+          chunks.map(chunk=>
+            db.from("item_values")
+              .select("item_id,column_id,value")
+              .in("item_id",chunk)
+              .limit(10000)   // explícito: nunca deixar o default 1000 cortar resultados
+          )
+        );
         // Deduplicar item_values por (item_id, column_id) — pega o último
         const vMap=new Map();
         for(const v of valsArr.flatMap(r=>r.data||[])) vMap.set(v.item_id+"_"+v.column_id,v);
