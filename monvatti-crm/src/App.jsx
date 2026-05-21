@@ -34,9 +34,8 @@ const sendEmailJS = async (params) => {
 //   2. Envie "I allow callmebot to send me messages" via WhatsApp para esse número
 //   3. Você receberá sua apikey em segundos — preencha abaixo
 const WA_DESTINATARIOS = [
-  { nome: "Yuri",     phone: "554899706309", apikey: "6328106"          },
-  { nome: "Mauricio", phone: "",             apikey: ""                 }, // ← preencher
-  { nome: "Alice",    phone: "",             apikey: ""                 }, // ← preencher
+  { nome: "Yuri",     phone: "554899706309", apikey: "6328106"},
+  { nome: "Mauricio", phone: "554898652493", apikey: "3460088"}, 
 ];
 const sendWhatsApp = async (text) => {
   const ativos = WA_DESTINATARIOS.filter(d => d.phone && d.apikey);
