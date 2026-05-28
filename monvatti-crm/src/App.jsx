@@ -230,6 +230,7 @@ function AuthProvider({children}) {
   const [session,setSession] = useState(null);
   const [profile,setProfile] = useState(null);
   const [authLoading,setAuthLoading] = useState(true);
+  const [isRecovery,setIsRecovery] = useState(false); // true quando vem do link de redefinição
   const fetchProfile = useCallback(async uid=>{
     // CRÍTICO: incluir permissions no join para getPerms ler do banco
     const {data}=await db.from("profiles")
@@ -248,7 +249,8 @@ function AuthProvider({children}) {
       if(s) fetchProfile(s.user.id).finally(()=>setAuthLoading(false));
       else setAuthLoading(false);
     });
-    const {data:{subscription}}=db.auth.onAuthStateChange((_,s)=>{
+    const {data:{subscription}}=db.auth.onAuthStateChange((event,s)=>{
+      if(event==="PASSWORD_RECOVERY") setIsRecovery(true);
       setSession(s); if(s) fetchProfile(s.user.id); else{setProfile(null);setAuthLoading(false);}
     });
     return()=>subscription.unsubscribe();
@@ -274,7 +276,8 @@ function AuthProvider({children}) {
     return{data,error};
   };
   const updatePassword = pw=>db.auth.updateUser({password:pw});
-  return <AuthCtx.Provider value={{session,profile,authLoading,signIn,signUp,signOut,updateProfile,updatePassword,fetchProfile}}>{children}</AuthCtx.Provider>;
+  const resetPassword  = email=>db.auth.resetPasswordForEmail(email,{redirectTo:window.location.origin});
+  return <AuthCtx.Provider value={{session,profile,authLoading,isRecovery,setIsRecovery,signIn,signUp,signOut,updateProfile,updatePassword,resetPassword,fetchProfile}}>{children}</AuthCtx.Provider>;
 }
 const useAuth = ()=>useContext(AuthCtx);
 
@@ -4138,13 +4141,17 @@ function AuthLayout({children}) {
 }
 
 function LoginPage({onSwitch}) {
-  const {signIn}=useAuth();
+  const {signIn,resetPassword}=useAuth();
   const toast=useToast();
+  const [view,setView]=useState("login"); // "login" | "forgot" | "sent"
   const [email,setEmail]=useState("");
   const [senha,setSenha]=useState("");
   const [busy,setBusy]=useState(false);
 
-  const submit=async e=>{
+  const foc=e=>e.target.style.borderColor="var(--blue)";
+  const blr=e=>e.target.style.borderColor="var(--border)";
+
+  const submitLogin=async e=>{
     e.preventDefault(); setBusy(true);
     const {error}=await signIn(email.trim().toLowerCase(),senha);
     if(error) toast(
@@ -4154,16 +4161,70 @@ function LoginPage({onSwitch}) {
     setBusy(false);
   };
 
-  const foc=e=>e.target.style.borderColor="var(--blue)";
-  const blr=e=>e.target.style.borderColor="var(--border)";
+  const submitReset=async e=>{
+    e.preventDefault(); setBusy(true);
+    const {error}=await resetPassword(email.trim().toLowerCase());
+    if(error){ toast("Erro ao enviar e-mail: "+error.message,"error"); setBusy(false); return; }
+    setView("sent");
+    setBusy(false);
+  };
 
+  // ── Tela: e-mail enviado
+  if(view==="sent") return (
+    <AuthLayout>
+      <div style={{textAlign:"center",padding:"8px 0 24px"}}>
+        <div style={{fontSize:48,marginBottom:16}}>📬</div>
+        <div style={{fontWeight:800,fontSize:18,color:"var(--text)",marginBottom:10}}>E-mail enviado!</div>
+        <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.7,marginBottom:24}}>
+          Enviamos um link de redefinição para<br/>
+          <strong style={{color:"var(--text)"}}>{email}</strong>.<br/>
+          Verifique sua caixa de entrada e spam.
+        </div>
+        <button onClick={()=>{setView("login");setSenha("");}}
+          style={{...T.btn,background:"var(--blue)",color:"#fff",width:"100%",padding:"12px",fontSize:14}}>
+          Voltar para o login
+        </button>
+      </div>
+    </AuthLayout>
+  );
+
+  // ── Tela: esqueci a senha
+  if(view==="forgot") return (
+    <AuthLayout>
+      <div style={{marginBottom:24}}>
+        <div style={{fontWeight:800,fontSize:18,color:"var(--text)",marginBottom:4}}>Redefinir senha</div>
+        <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.6}}>
+          Digite seu e-mail e enviaremos um link para você criar uma nova senha.
+        </div>
+      </div>
+      <form onSubmit={submitReset}>
+        <label style={T.lbl}>E-mail</label>
+        <input type="email" value={email} onChange={e=>setEmail(e.target.value)} required autoFocus
+          placeholder="nome@empresa.com"
+          style={{...T.inp,marginBottom:22}} onFocus={foc} onBlur={blr}/>
+        <button type="submit" disabled={busy||!email}
+          style={{...T.btn,background:"var(--blue)",color:"#fff",width:"100%",padding:"13px",fontSize:15,
+            opacity:busy||!email?0.6:1}}>
+          {busy?"Enviando…":"Enviar link de redefinição"}
+        </button>
+      </form>
+      <p style={{textAlign:"center",fontSize:13,color:"var(--text3)",marginTop:20,marginBottom:0}}>
+        <button onClick={()=>setView("login")}
+          style={{background:"none",border:"none",color:"var(--blue)",cursor:"pointer",fontWeight:700,fontSize:13}}>
+          ← Voltar para o login
+        </button>
+      </p>
+    </AuthLayout>
+  );
+
+  // ── Tela: login principal
   return (
     <AuthLayout>
       <div style={{marginBottom:24}}>
         <div style={{fontWeight:800,fontSize:18,color:"var(--text)",marginBottom:4}}>Bem-vindo de volta</div>
         <div style={{fontSize:13,color:"var(--text2)"}}>Entre com suas credenciais para acessar o CRM.</div>
       </div>
-      <form onSubmit={submit}>
+      <form onSubmit={submitLogin}>
         <label style={T.lbl}>E-mail</label>
         <input type="email" value={email} onChange={e=>setEmail(e.target.value)} required autoFocus
           placeholder="nome@empresa.com"
@@ -4172,7 +4233,15 @@ function LoginPage({onSwitch}) {
         <label style={T.lbl}>Senha</label>
         <input type="password" value={senha} onChange={e=>setSenha(e.target.value)} required
           placeholder="Sua senha"
-          style={{...T.inp,marginBottom:26}} onFocus={foc} onBlur={blr}/>
+          style={{...T.inp,marginBottom:10}} onFocus={foc} onBlur={blr}/>
+
+        <div style={{textAlign:"right",marginBottom:20}}>
+          <button type="button" onClick={()=>setView("forgot")}
+            style={{background:"none",border:"none",color:"var(--blue)",cursor:"pointer",
+              fontSize:12,fontWeight:600,padding:0}}>
+            Esqueci minha senha
+          </button>
+        </div>
 
         <button type="submit" disabled={busy||!email||!senha}
           style={{...T.btn,background:"var(--blue)",color:"#fff",width:"100%",padding:"13px",fontSize:15,
@@ -4892,7 +4961,7 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
 // APP CONTENT
 // ─────────────────────────────────────────────────────────────────────────────
 function AppContent() {
-  const {session,profile,authLoading,signOut}=useAuth();
+  const {session,profile,authLoading,signOut,isRecovery}=useAuth();
   const {dark,toggle:toggleDark}=useTheme();
   const toast=useToast();
   const {isMobile}=useBreakpoint();
@@ -5048,6 +5117,9 @@ Para confirmar, digite exatamente:
     </div>
   );
 
+  // Se usuário veio do link de redefinição de senha, mostrar tela de nova senha
+  if(session&&isRecovery) return <ResetPasswordPage/>;
+
   if(!session) return authPage==="login"
     ?<LoginPage onSwitch={()=>setAuthPage("register")}/>
     :<RegisterPage onSwitch={()=>setAuthPage("login")}/>;
@@ -5107,6 +5179,78 @@ Para confirmar, digite exatamente:
         onSave={s=>saveBoardSettings(boardSettingsM,s)}
         onClose={()=>setBoardSettingsM(null)}/>}
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RESET PASSWORD PAGE — exibida quando usuário volta do link de e-mail
+// ─────────────────────────────────────────────────────────────────────────────
+function ResetPasswordPage() {
+  const {updatePassword,setIsRecovery,signOut}=useAuth();
+  const toast=useToast();
+  const [nova,setNova]=useState("");
+  const [confirma,setConfirma]=useState("");
+  const [busy,setBusy]=useState(false);
+  const [done,setDone]=useState(false);
+
+  const foc=e=>e.target.style.borderColor="var(--blue)";
+  const blr=e=>e.target.style.borderColor="var(--border)";
+  const match=nova&&confirma&&nova===confirma;
+  const strong=nova.length>=8;
+
+  const submit=async e=>{
+    e.preventDefault();
+    if(!match||!strong) return;
+    setBusy(true);
+    const {error}=await updatePassword(nova);
+    if(error){ toast("Erro ao redefinir: "+error.message,"error"); setBusy(false); return; }
+    setDone(true);
+    toast("Senha redefinida com sucesso!","success");
+    setTimeout(()=>{setIsRecovery(false);},2000);
+    setBusy(false);
+  };
+
+  if(done) return (
+    <AuthLayout>
+      <div style={{textAlign:"center",padding:"8px 0 24px"}}>
+        <div style={{fontSize:48,marginBottom:16}}>✅</div>
+        <div style={{fontWeight:800,fontSize:18,color:"var(--text)",marginBottom:10}}>Senha redefinida!</div>
+        <div style={{fontSize:13,color:"var(--text2)"}}>Você será redirecionado para o CRM em instantes.</div>
+      </div>
+    </AuthLayout>
+  );
+
+  return (
+    <AuthLayout>
+      <div style={{marginBottom:24}}>
+        <div style={{fontWeight:800,fontSize:18,color:"var(--text)",marginBottom:4}}>Nova senha</div>
+        <div style={{fontSize:13,color:"var(--text2)"}}>Escolha uma senha segura para sua conta.</div>
+      </div>
+      <form onSubmit={submit}>
+        <label style={T.lbl}>Nova senha</label>
+        <input type="password" value={nova} onChange={e=>setNova(e.target.value)} required autoFocus
+          placeholder="Mínimo 8 caracteres"
+          style={{...T.inp,marginBottom:6,borderColor:nova&&!strong?"#dc2626":"var(--border)"}} onFocus={foc} onBlur={blr}/>
+        {nova&&!strong&&<div style={{fontSize:12,color:"#dc2626",marginBottom:10}}>Use pelo menos 8 caracteres.</div>}
+        {nova&&strong&&<div style={{fontSize:12,color:"#10b981",marginBottom:10}}>✓ Senha válida.</div>}
+
+        <label style={T.lbl}>Confirmar nova senha</label>
+        <input type="password" value={confirma} onChange={e=>setConfirma(e.target.value)} required
+          placeholder="Repita a senha"
+          style={{...T.inp,marginBottom:6,
+            borderColor:confirma&&!match?"#dc2626":confirma&&match?"#10b981":"var(--border)"}} onFocus={foc} onBlur={blr}/>
+        {confirma&&!match&&<div style={{fontSize:12,color:"#dc2626",marginBottom:10}}>As senhas não coincidem.</div>}
+        {confirma&&match&&<div style={{fontSize:12,color:"#10b981",marginBottom:10}}>✓ As senhas coincidem.</div>}
+
+        <div style={{marginTop:8}}>
+          <button type="submit" disabled={busy||!match||!strong}
+            style={{...T.btn,background:"var(--blue)",color:"#fff",width:"100%",padding:"13px",fontSize:15,
+              opacity:busy||!match||!strong?0.5:1}}>
+            {busy?"Redefinindo…":"Redefinir senha"}
+          </button>
+        </div>
+      </form>
+    </AuthLayout>
   );
 }
 
