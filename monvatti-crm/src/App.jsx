@@ -371,7 +371,7 @@ function PortalDrop({trigger, children, minWidth=220, maxHeight=320}) {
 
   return (
     <>
-      <div ref={trigRef} onClick={openDrop} style={{cursor:"pointer"}}>
+      <div ref={trigRef} onClick={openDrop} style={{cursor:"pointer",overflow:"hidden",maxWidth:"100%"}}>
         {trigger}
       </div>
       {open && createPortal(
@@ -463,14 +463,63 @@ function Modal({title,onClose,children,width=490,footer=null}) {
   );
 }
 
-function ConfirmModal({title,message,danger=false,onConfirm,onCancel}) {
+function ConfirmModal({title,message,danger=false,onConfirm,onCancel,requirePhrase=null,boardName=""}) {
+  const [typed,setTyped]=useState("");
+  const phraseOk=!requirePhrase||typed===requirePhrase;
+  const lines=message.split("\n");
   return (
-    <Modal title={title} onClose={onCancel} width={420}
+    <Modal title={title} onClose={onCancel} width={480}
       footer={<>
         <button onClick={onCancel} style={{...T.btn,background:"var(--surface3)",color:"var(--text)"}}>Cancelar</button>
-        <button onClick={onConfirm} style={{...T.btn,background:danger?"#dc2626":"var(--blue)",color:"#fff"}}>{danger?"Excluir":"Confirmar"}</button>
+        <button onClick={onConfirm} disabled={!phraseOk}
+          style={{...T.btn,background:danger?"#dc2626":"var(--blue)",color:"#fff",
+            opacity:phraseOk?1:0.4,cursor:phraseOk?"pointer":"not-allowed",transition:"opacity .2s"}}>
+          {danger?"Excluir permanentemente":"Confirmar"}
+        </button>
       </>}>
-      <p style={{margin:0,fontSize:14,color:"var(--text2)",lineHeight:1.7}}>{message}</p>
+      {/* Aviso visual de perigo */}
+      {danger&&requirePhrase&&(
+        <div style={{background:"#fef2f2",border:"1.5px solid #fca5a5",borderRadius:10,
+          padding:"12px 16px",marginBottom:18,display:"flex",gap:12,alignItems:"flex-start"}}>
+          <span style={{fontSize:22,flexShrink:0}}>⚠️</span>
+          <div>
+            <div style={{fontWeight:800,color:"#dc2626",fontSize:14,marginBottom:4}}>Ação irreversível</div>
+            <div style={{fontSize:13,color:"#7f1d1d",lineHeight:1.6}}>
+              Todos os leads, campos e anotações do quadro <strong>"{boardName}"</strong> serão apagados para sempre. Esta ação não pode ser desfeita.
+            </div>
+          </div>
+        </div>
+      )}
+      {lines.filter(l=>!l.includes("Para confirmar")&&!l.includes('"Eu realmente')).map((l,i)=>(
+        l?<p key={i} style={{margin:"0 0 6px",fontSize:14,color:"var(--text2)",lineHeight:1.7}}>{l}</p>:null
+      ))}
+      {requirePhrase&&(
+        <div style={{marginTop:16}}>
+          <div style={{fontSize:13,color:"var(--text2)",marginBottom:8}}>
+            Para confirmar, digite exatamente:
+          </div>
+          <div style={{background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:8,
+            padding:"10px 14px",fontFamily:"monospace",fontSize:13,color:"var(--text)",
+            marginBottom:12,userSelect:"none",letterSpacing:.2}}>
+            {requirePhrase}
+          </div>
+          <input
+            value={typed}
+            onChange={e=>setTyped(e.target.value)}
+            placeholder="Digite a frase acima..."
+            style={{...T.inp,fontFamily:"monospace",fontSize:13,
+              borderColor:typed&&!phraseOk?"#dc2626":typed&&phraseOk?"#10b981":"var(--border)",
+              boxShadow:typed&&phraseOk?"0 0 0 2px #10b98130":typed&&!phraseOk?"0 0 0 2px #dc262620":"none"}}
+            autoFocus
+          />
+          {typed&&!phraseOk&&(
+            <div style={{fontSize:12,color:"#dc2626",marginTop:5}}>A frase não corresponde exatamente.</div>
+          )}
+          {typed&&phraseOk&&(
+            <div style={{fontSize:12,color:"#10b981",marginTop:5,fontWeight:600}}>✓ Confirmado — você pode excluir agora.</div>
+          )}
+        </div>
+      )}
     </Modal>
   );
 }
@@ -623,7 +672,7 @@ function StatusCell({value,options=[],onChange}) {
   const minW     = useGrid ? Math.min(480, Math.max(280, resolved.length * 48)) : 230;
 
   const trigger = (
-    <div style={{padding:"4px 4px",userSelect:"none",minWidth:120}}>
+    <div style={{padding:"4px 4px",userSelect:"none",maxWidth:"100%",overflow:"hidden"}}>
       {current
         ? <div style={{
             display:"inline-flex",alignItems:"center",gap:6,
@@ -698,11 +747,11 @@ function UserCell({value=[],allUsers=[],onChange}) {
   const sel=cur.map(id=>allUsers.find(u=>u.id===id)).filter(Boolean);
   const toggle=uid=>onChange(cur.includes(uid)?cur.filter(x=>x!==uid):[...cur,uid]);
   const trigger=(
-    <div style={{display:"flex",alignItems:"center",padding:"5px 5px",minHeight:32,minWidth:56}}>
+    <div style={{display:"flex",alignItems:"center",padding:"5px 5px",minHeight:32,maxWidth:"100%",overflow:"hidden"}}>
       {!sel.length
         ? <div style={{width:28,height:28,borderRadius:"50%",border:"1.5px dashed var(--border)",
             display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,color:"var(--text3)"}}>+</div>
-        : <div style={{display:"flex",alignItems:"center",maxWidth:68,overflow:"hidden",flexShrink:0}}>{sel.slice(0,3).map((u,idx)=><div key={u.id} style={{marginLeft:idx?-7:0,flexShrink:0,zIndex:10-idx,borderRadius:"50%",border:"2px solid var(--surface)"}}><Avatar user={u} size={24}/></div>)}{sel.length>3&&<div style={{marginLeft:-7,width:24,height:24,borderRadius:"50%",background:"var(--surface3)",border:"2px solid var(--surface)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,color:"var(--text2)",flexShrink:0}}>+{sel.length-3}</div>}</div>
+        : <div style={{display:"flex",alignItems:"center",maxWidth:68,overflow:"hidden",flexShrink:0,position:"relative",zIndex:0}}>{sel.slice(0,3).map((u,idx)=><div key={u.id} style={{marginLeft:idx?-7:0,flexShrink:0,zIndex:10-idx,borderRadius:"50%",border:"2px solid var(--surface)",position:"relative"}}><Avatar user={u} size={24}/></div>)}{sel.length>3&&<div style={{marginLeft:-7,width:24,height:24,borderRadius:"50%",background:"var(--surface3)",border:"2px solid var(--surface)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,color:"var(--text2)",flexShrink:0}}>+{sel.length-3}</div>}</div>
       }
     </div>
   );
@@ -1449,7 +1498,7 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
         </div>
       </td>
       {columns.map(col=>(
-        <td key={col.id} style={{padding:"2px 3px",borderRight:"1px solid var(--border)",verticalAlign:"middle",maxWidth:220}}>
+        <td key={col.id} style={{padding:"2px 3px",borderRight:"1px solid var(--border)",verticalAlign:"middle",maxWidth:220,overflow:"hidden"}}>
           <Cell col={col} values={item.values} allColumns={columns}
             responsibles={item.responsibles} allUsers={allUsers}
             onChange={v=>onUpdateValue(col.id,v)} onRespChange={onRespChange}/>
@@ -1483,7 +1532,7 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
 
 // Mobile card view para itens
 function ItemCard({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete}) {
-  const firstCol=columns[0];
+  const firstCol=columns.find(c=>c.tipo==="text"||c.tipo==="email"||c.tipo==="phone")||columns[0];
   const title=item.values?.[firstCol?.id]||"Sem título";
   const statusCol=columns.find(c=>c.tipo==="status");
   const statusVal=statusCol?item.values?.[statusCol.id]:null;
@@ -1590,6 +1639,36 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
   sortCfg={colId:null,dir:1},setSortCfg=()=>{}}) {
   const [renaming,setRenaming]=useState(false);
   const [gname,setGname]=useState(group.nome);
+  const [localCollapsed,setLocalCollapsed]=useState(true); // inicia minimizado
+  // Usa collapsed do group prop se passado via sgCollapsed, senão estado local
+  const isCollapsed=group.collapsed!==undefined?group.collapsed:localCollapsed;
+  const toggleCollapsed=()=>{
+    if(group.collapsed!==undefined&&onToggle) onToggle();
+    else setLocalCollapsed(p=>!p);
+  };
+  // Larguras de coluna redimensionáveis
+  const defaultWidths=()=>columns.map(c=>
+    c.tipo==="date"?105:c.tipo==="currency"||c.tipo==="number"||c.tipo==="calculated"?110:
+    c.tipo==="user"?75:c.tipo==="status"?130:140
+  );
+  const [colWidthsState,setColWidthsState]=useState(defaultWidths);
+  const resizingRef=useRef(null); // {colIdx, startX, startW}
+  const startResize=(e,colIdx)=>{
+    e.preventDefault();
+    resizingRef.current={colIdx,startX:e.clientX,startW:colWidthsState[colIdx]};
+    const onMove=ev=>{
+      const {colIdx:ci,startX,startW}=resizingRef.current;
+      const newW=Math.max(50,startW+(ev.clientX-startX));
+      setColWidthsState(prev=>{const next=[...prev];next[ci]=newW;return next;});
+    };
+    const onUp=()=>{
+      resizingRef.current=null;
+      document.removeEventListener("mousemove",onMove);
+      document.removeEventListener("mouseup",onUp);
+    };
+    document.addEventListener("mousemove",onMove);
+    document.addEventListener("mouseup",onUp);
+  };
   const nref=useRef();
   const stickyRef=useRef();   // header scroll container (overflow:hidden)
   const bodyRef=useRef();     // body scroll container (overflow:auto)
@@ -1605,10 +1684,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
   };
 
   // Colgroup compartilhado — garante alinhamento exato entre header e body
-  const colWidths=columns.map(c=>
-    c.tipo==="date"?105:c.tipo==="currency"||c.tipo==="number"||c.tipo==="calculated"?110:
-    c.tipo==="user"?75:c.tipo==="status"?130:140
-  );
+  const colWidths=colWidthsState;
   const totalW=52+colWidths.reduce((s,w)=>s+w,0)+72;
   const cg=(
     <colgroup>
@@ -1629,15 +1705,15 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
           position:"sticky",top:0,zIndex:5,
           overflow:"hidden",          // sem scrollbar, mas scrollLeft é setável via JS
           background:"var(--surface)",
-          borderRadius:group.collapsed?"11px":"11px 11px 0 0",
+          borderRadius:isCollapsed?"11px":"11px 11px 0 0",
           boxShadow:"0 2px 10px var(--shadow)"}}>
 
           {/* Linha do grupo */}
           <div style={{display:"flex",alignItems:"center",gap:9,padding:"10px 14px",
             background:"var(--surface)",borderLeft:`4px solid ${group.color}`,minWidth:totalW}}>
-            <button onClick={onToggle}
+            <button onClick={toggleCollapsed}
               style={{background:"none",border:"none",cursor:"pointer",fontSize:11,color:group.color,
-                padding:0,transform:group.collapsed?"rotate(-90deg)":"none",transition:"transform .2s",lineHeight:1,flexShrink:0}}>▼</button>
+                padding:0,transform:isCollapsed?"rotate(-90deg)":"none",transition:"transform .2s",lineHeight:1,flexShrink:0}}>▼</button>
             {renaming&&canRename
               ? <input ref={nref} value={gname} onChange={e=>setGname(e.target.value)}
                   onBlur={()=>{setRenaming(false);if(gname.trim())onRenameGroup(gname.trim());else setGname(group.nome);}}
@@ -1658,7 +1734,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
           </div>
 
           {/* Linha das colunas — mesma estrutura de colgroup do body */}
-          {!group.collapsed&&(
+          {!isCollapsed&&(
             <table style={{width:"100%",borderCollapse:"collapse",tableLayout:"fixed"}}>
               {cg}
               <tbody>
@@ -1681,21 +1757,27 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                       else setSortCfg({colId:null,dir:1});
                     };
                     return (
-                      <th key={col.id} onClick={cycleSort}
+                      <th key={col.id}
                         style={{padding:"7px 11px",textAlign:"left",fontWeight:700,fontSize:11,
                           color:isActive?"var(--blue)":"var(--text3)",whiteSpace:"nowrap",
                           borderRight:"1px solid var(--border)",textTransform:"uppercase",letterSpacing:.4,
-                          overflow:"hidden",textOverflow:"ellipsis",background:"var(--surface2)",
-                          cursor:"pointer",userSelect:"none",transition:"color .15s"}}
-                        onMouseEnter={e=>{if(!isActive)e.currentTarget.style.color="var(--text2)";}}
-                        onMouseLeave={e=>{if(!isActive)e.currentTarget.style.color="var(--text3)";}}>
-                        <div style={{display:"flex",alignItems:"center",gap:4}}>
+                          background:"var(--surface2)",cursor:"pointer",userSelect:"none",
+                          transition:"color .15s",position:"relative",overflow:"visible"}}>
+                        <div onClick={cycleSort} style={{display:"flex",alignItems:"center",gap:4,overflow:"hidden"}}
+                          onMouseEnter={e=>{if(!isActive)e.currentTarget.parentElement.style.color="var(--text2)";}}
+                          onMouseLeave={e=>{if(!isActive)e.currentTarget.parentElement.style.color="var(--text3)";}}>
                           <span style={{overflow:"hidden",textOverflow:"ellipsis"}}>{col.nome}</span>
                           <div style={{display:"flex",flexDirection:"column",gap:0,flexShrink:0,lineHeight:.8}}>
                             <span style={{fontSize:8,opacity:isAsc?1:.25,color:isActive?"var(--blue)":"var(--text3)"}}>▲</span>
                             <span style={{fontSize:8,opacity:isDesc?1:.25,color:isActive?"var(--blue)":"var(--text3)"}}>▼</span>
                           </div>
                         </div>
+                        {/* Alça de resize — drag na borda direita */}
+                        <div onMouseDown={e=>{e.stopPropagation();startResize(e,columns.indexOf(col));}}
+                          style={{position:"absolute",top:0,right:0,width:6,height:"100%",cursor:"col-resize",
+                            zIndex:10,background:"transparent"}}
+                          onMouseEnter={e=>e.currentTarget.style.background="var(--blue)30"}
+                          onMouseLeave={e=>e.currentTarget.style.background="transparent"}/>
                       </th>
                     );
                   })}
@@ -1782,57 +1864,99 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
 // ─────────────────────────────────────────────────────────────────────────────
 function ItemPanel({item,board,allUsers,currentUser,onClose,onUpdateValue,onRespChange,onAddUpdate,onDelUpdate}) {
   const [submitting,setSubmitting]=useState(false);
+  const [activeTab,setActiveTab]=useState("anotacoes"); // "anotacoes" | "campos"
   const {isMobile}=useBreakpoint();
-  const firstCol=board?.columns?.[0];
+  const firstCol=board?.columns?.find(c=>c.tipo==="text"||c.tipo==="email"||c.tipo==="phone")||board?.columns?.[0];
   const title=item.values?.[firstCol?.id]||"Sem título";
   const handleUpdate=async html=>{setSubmitting(true);await onAddUpdate(html);setSubmitting(false);};
-  const panelW=isMobile?"100vw":"500px";
+  const panelW=isMobile?"100vw":"520px";
+  const updCount=(item.updates||[]).length;
+
+  const tabStyle=(tab)=>({
+    padding:"10px 20px",fontSize:13,fontWeight:700,cursor:"pointer",
+    border:"none",background:"none",
+    color:activeTab===tab?"var(--blue)":"var(--text3)",
+    borderBottom:activeTab===tab?"2.5px solid var(--blue)":"2.5px solid transparent",
+    transition:"all .15s",whiteSpace:"nowrap",
+  });
 
   return createPortal(
     <div style={{position:"fixed",top:0,right:0,bottom:0,width:panelW,background:"var(--surface)",
       borderLeft:"1.5px solid var(--border)",display:"flex",flexDirection:"column",
       zIndex:1100,boxShadow:"-8px 0 40px var(--shadowMd)"}}>
-      <div style={{padding:"17px 22px",borderBottom:"1px solid var(--border)",display:"flex",
-        alignItems:"center",gap:13,background:"var(--surface2)",flexShrink:0}}>
-        <div style={{flex:1,minWidth:0}}>
-          <div style={{fontSize:16,fontWeight:800,color:"var(--text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{title}</div>
-          <div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{board?.icon} {board?.nome}</div>
+
+      {/* Header */}
+      <div style={{padding:"17px 22px 14px",borderBottom:"1px solid var(--border)",
+        background:"var(--surface2)",flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:13,marginBottom:14}}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:16,fontWeight:800,color:"var(--text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{title}</div>
+            <div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{board?.icon} {board?.nome}</div>
+          </div>
+          <button onClick={onClose}
+            style={{background:"none",border:"1px solid var(--border)",borderRadius:7,fontSize:22,cursor:"pointer",
+              color:"var(--text3)",width:35,height:35,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>×</button>
         </div>
-        <button onClick={onClose}
-          style={{background:"none",border:"1px solid var(--border)",borderRadius:7,fontSize:22,cursor:"pointer",
-            color:"var(--text3)",width:35,height:35,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>×</button>
+        {/* Abas */}
+        <div style={{display:"flex",borderBottom:"1px solid var(--border)",marginBottom:-14,marginLeft:-2}}>
+          <button style={tabStyle("anotacoes")} onClick={()=>setActiveTab("anotacoes")}>
+            💬 Anotações {updCount>0&&<span style={{marginLeft:5,background:"var(--blue)",color:"#fff",borderRadius:20,
+              padding:"0 6px",fontSize:11,fontWeight:700}}>{updCount}</span>}
+          </button>
+          <button style={tabStyle("campos")} onClick={()=>setActiveTab("campos")}>
+            📋 Campos
+          </button>
+        </div>
       </div>
-      <div style={{flex:1,overflowY:"auto",padding:"18px 22px"}}>
-        <div style={{fontSize:11,fontWeight:700,color:"var(--text3)",marginBottom:16,textTransform:"uppercase",letterSpacing:.5}}>Campos</div>
-        {board?.columns?.map(col=>(
-          <div key={col.id} style={{display:"flex",alignItems:"flex-start",marginBottom:9,gap:12,paddingBottom:9,borderBottom:"1px solid var(--border)"}}>
-            <div style={{width:130,fontSize:12,color:"var(--text3)",flexShrink:0,paddingTop:7,fontWeight:600}}>{col.nome}</div>
-            <div style={{flex:1,minWidth:0}}>
-              <Cell col={col} values={item.values} allColumns={board.columns}
-                responsibles={item.responsibles} allUsers={allUsers}
-                onChange={v=>onUpdateValue(col.id,v)} onRespChange={onRespChange}/>
+
+      {/* Conteúdo da aba */}
+      <div style={{flex:1,overflowY:"auto",padding:"22px 22px"}}>
+
+        {/* ABA: ANOTAÇÕES */}
+        {activeTab==="anotacoes"&&(
+          <div>
+            <RichEditor onSubmit={handleUpdate} disabled={submitting}/>
+            <div style={{marginTop:22}}>
+              {updCount===0&&(
+                <div style={{textAlign:"center",padding:"32px 0",color:"var(--text3)"}}>
+                  <div style={{fontSize:32,marginBottom:10}}>💬</div>
+                  <div style={{fontSize:14,fontWeight:600,marginBottom:4}}>Nenhuma anotação ainda</div>
+                  <div style={{fontSize:12}}>Use o editor acima para registrar informações sobre este lead.</div>
+                </div>
+              )}
+              {(item.updates||[]).map(u=>(
+                <div key={u.id} style={{padding:"13px 16px",background:"var(--surface2)",borderRadius:10,
+                  marginBottom:10,border:"1px solid var(--border)",borderLeft:"3px solid var(--alt)"}}>
+                  <div style={{fontSize:11,color:"var(--text3)",marginBottom:8,display:"flex",alignItems:"center",gap:8,justifyContent:"space-between"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <Avatar user={allUsers.find(x=>x.id===u.created_by)||currentUser} size={22}/>
+                      <span>{new Date(u.created_at).toLocaleString("pt-BR")}</span>
+                    </div>
+                    <button onClick={()=>onDelUpdate(u.id)} style={{...T.iBtn,color:"#dc2626",borderColor:"#FEE2E280",fontSize:11}}>✕</button>
+                  </div>
+                  <div style={{fontSize:13,color:"var(--text)",lineHeight:1.75}} dangerouslySetInnerHTML={{__html:linkifyHTML(u.content)}}/>
+                </div>
+              ))}
             </div>
           </div>
-        ))}
-        <div style={{marginTop:28,paddingTop:24,borderTop:"1.5px solid var(--border)"}}>
-          <div style={{fontSize:11,fontWeight:700,color:"var(--text3)",marginBottom:16,textTransform:"uppercase",letterSpacing:.5}}>Atualizações</div>
-          <RichEditor onSubmit={handleUpdate} disabled={submitting}/>
-          <div style={{marginTop:20}}>
-            {(item.updates||[]).map(u=>(
-              <div key={u.id} style={{padding:"13px 15px",background:"var(--surface2)",borderRadius:9,marginBottom:10,borderLeft:"3px solid var(--alt)"}}>
-                <div style={{fontSize:11,color:"var(--text3)",marginBottom:7,display:"flex",alignItems:"center",gap:8,justifyContent:"space-between"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8}}>
-                    <Avatar user={allUsers.find(x=>x.id===u.created_by)||currentUser} size={20}/>
-                    {new Date(u.created_at).toLocaleString("pt-BR")}
-                  </div>
-                  <button onClick={()=>onDelUpdate(u.id)} style={{...T.iBtn,color:"#dc2626",borderColor:"#FEE2E2",fontSize:11}}>✕</button>
+        )}
+
+        {/* ABA: CAMPOS */}
+        {activeTab==="campos"&&(
+          <div>
+            {board?.columns?.map(col=>(
+              <div key={col.id} style={{display:"flex",alignItems:"flex-start",marginBottom:10,
+                gap:12,paddingBottom:10,borderBottom:"1px solid var(--border)"}}>
+                <div style={{width:130,fontSize:12,color:"var(--text3)",flexShrink:0,paddingTop:7,fontWeight:600,lineHeight:1.4}}>{col.nome}</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <Cell col={col} values={item.values} allColumns={board.columns}
+                    responsibles={item.responsibles} allUsers={allUsers}
+                    onChange={v=>onUpdateValue(col.id,v)} onRespChange={onRespChange}/>
                 </div>
-                <div style={{fontSize:13,color:"var(--text)",lineHeight:1.7}} dangerouslySetInnerHTML={{__html:linkifyHTML(u.content)}}/>
               </div>
             ))}
-            {!(item.updates||[]).length&&<div style={{fontSize:13,color:"var(--text3)",textAlign:"center",padding:"24px 0"}}>Nenhuma atualização</div>}
           </div>
-        </div>
+        )}
       </div>
     </div>,
     document.body
@@ -1959,9 +2083,13 @@ function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedIt
   onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,
   onRenameSubGroup,onDelSubGroup,onEditParent,onDelParent}) {
 
-  const [collapsed,setCollapsed]=useState(false);
-  // Estado local de colapso por sub-grupo (id → bool)
-  const [sgCollapsed,setSgCollapsed]=useState({});
+  const [collapsed,setCollapsed]=useState(true);  // inicia minimizado
+  // Estado local de colapso por sub-grupo (id → bool) — inicia minimizado
+  const [sgCollapsed,setSgCollapsed]=useState(()=>{
+    const init={};
+    (subGroups||[]).forEach(sg=>{init[sg.id]=true;});
+    return init;
+  });
   const toggleSg=id=>setSgCollapsed(p=>({...p,[id]:!p[id]}));
   const [renaming,setRenaming]=useState(false);
   const [pgName,setPgName]=useState(parentGroup.nome);
@@ -2834,7 +2962,10 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
         .map(sg=>({...sg,items:applyFilters(sg.items||[])})),
     }));
 
-    // Closer: vê apenas o seu grupo mãe (pelo owner_id)
+    // SDR: não tem acesso ao board de Negociações — retorna vazio
+    if(perms.slug==="sdr") return [];
+
+    // Closer: vê apenas o seu grupo mãe (pelo owner_id ou group_access)
     if(perms.slug==="closer"){
       enriched=enriched.filter(pg=>pg.owner_id===currentUser?.id||(groupAccess[pg.id]||[]).includes(currentUser?.id));
     }
@@ -2852,7 +2983,19 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
   const filterCount=(filters.status?.length||0)+(filters.resp?.length||0)+(filters.dateFrom?1:0)+(filters.dateTo?1:0)+(filters.month?1:0)+(search.trim()?1:0);
 
   if(loading) return <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}><Spinner size={40}/><span style={{color:"var(--text3)",fontSize:14}}>Carregando…</span></div>;
-  if(!board) return <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"var(--text3)",fontSize:14}}>Selecione um quadro</div>;
+  if(!board) return (
+    <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:20,
+      background:"var(--bg)",padding:32}}>
+      <div style={{fontSize:64,lineHeight:1}}>🔒</div>
+      <div style={{textAlign:"center"}}>
+        <div style={{fontSize:20,fontWeight:800,color:"var(--text)",marginBottom:8}}>Acesso Restrito</div>
+        <div style={{fontSize:14,color:"var(--text3)",maxWidth:320,lineHeight:1.6}}>
+          Você não tem permissão para visualizar este quadro.<br/>
+          Entre em contato com um administrador para solicitar acesso.
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
@@ -3030,7 +3173,7 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
         document.body
       )}
 
-      {confirmM&&<ConfirmModal title={confirmM.title} message={confirmM.message} danger={confirmM.danger} onConfirm={confirmM.onConfirm} onCancel={()=>setConfirmM(null)}/>}
+      {confirmM&&<ConfirmModal title={confirmM.title} message={confirmM.message} danger={confirmM.danger} onConfirm={confirmM.onConfirm} onCancel={()=>setConfirmM(null)} requirePhrase={confirmM.requirePhrase||null} boardName={confirmM.boardName||""}/>}
       {groupSelM&&<GroupSelectorModal title={groupSelM.title} groups={groupSelM.groups} onSelect={groupSelM.onSelect} onCancel={()=>setGroupSelM(null)}/>}
       {sendToNegM&&<SendToNegModal groups={sendToNegM.groups} onSelect={sendToNegM.onSelect} onCancel={()=>setSendToNegM(null)}/>}
       {groupCreateM&&<GroupCreateModal allUsers={allUsers} onSave={addGroup} onCancel={()=>setGroupCreateM(false)}/>}
@@ -4772,6 +4915,8 @@ function AppContent() {
   // Boards visíveis conforme privacidade
   const visibleBoards=useMemo(()=>{
     if(perms.all||perms.viewAll) return boards;
+    // SDR não vê o board de Negociações
+    if(perms.slug==="sdr") return boards.filter(b=>b.nome!=="Negociações");
     return boards.filter(b=>!b.is_private||(boardAccess[b.id]||[]).includes(profile?.id));
   },[boards,perms,boardAccess,profile]);
 
@@ -4877,12 +5022,22 @@ function AppContent() {
     setBoardFormM(null);toast("Quadro atualizado!");
   };
   const delBoard=b=>{
-    setConfirmM({title:"Excluir quadro",danger:true,message:`Excluir "${b.nome}" e todos os dados?`,
+    // Modal de confirmação com digitação obrigatória da frase
+    const FRASE="Eu realmente quero deletar esse quadro inteiro!";
+    setConfirmM({
+      title:"⚠️ Excluir quadro permanentemente",
+      danger:true,
+      requirePhrase:FRASE,
+      boardName:b.nome,
+      message:`Esta ação é irreversível. Todos os leads, campos e anotações do quadro "${b.nome}" serão apagados para sempre.
+
+Para confirmar, digite exatamente:
+"${FRASE}"`,
       onConfirm:async()=>{
         await db.from("boards").delete().eq("id",b.id);
         const rem=boards.filter(x=>x.id!==b.id);setBoards(rem);
         if(boardId===b.id)setBoardId(rem[0]?.id||null);
-        toast("Quadro excluído");setConfirmM(null);
+        toast("Quadro excluído permanentemente");setConfirmM(null);
       }
     });
   };
@@ -4944,7 +5099,7 @@ function AppContent() {
             currentUser={profile} wsId={wsId} perms={perms} onBoardCountChange={bumpCount}/>
         )}
       </div>
-      {confirmM&&<ConfirmModal title={confirmM.title} message={confirmM.message} danger={confirmM.danger} onConfirm={confirmM.onConfirm} onCancel={()=>setConfirmM(null)}/>}
+      {confirmM&&<ConfirmModal title={confirmM.title} message={confirmM.message} danger={confirmM.danger} onConfirm={confirmM.onConfirm} onCancel={()=>setConfirmM(null)} requirePhrase={confirmM.requirePhrase||null} boardName={confirmM.boardName||""}/>}
       {boardFormM!==null&&<BoardFormModal initial={boardFormM} onCancel={()=>setBoardFormM(null)} onSave={boardFormM?.id?editBoard:addBoard}/>}
       {boardSettingsM&&<BoardSettingsModal board={boardSettingsM} allUsers={allUsers}
         currentAccess={boardAccess[boardSettingsM.id]||[]}
