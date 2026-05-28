@@ -276,7 +276,7 @@ function AuthProvider({children}) {
     return{data,error};
   };
   const updatePassword = pw=>db.auth.updateUser({password:pw});
-  const resetPassword  = email=>db.auth.resetPasswordForEmail(email,{redirectTo:window.location.origin});
+  const resetPassword  = email=>db.auth.resetPasswordForEmail(email,{redirectTo:"https://monvatticrm.com"});
   return <AuthCtx.Provider value={{session,profile,authLoading,isRecovery,setIsRecovery,signIn,signUp,signOut,updateProfile,updatePassword,resetPassword,fetchProfile}}>{children}</AuthCtx.Provider>;
 }
 const useAuth = ()=>useContext(AuthCtx);
@@ -5098,10 +5098,7 @@ function AppContent() {
       danger:true,
       requirePhrase:FRASE,
       boardName:b.nome,
-      message:`Esta ação é irreversível. Todos os leads, campos e anotações do quadro "${b.nome}" serão apagados para sempre.
-
-Para confirmar, digite exatamente:
-"${FRASE}"`,
+      message:"Esta ação é irreversível. Todos os leads, campos e anotações do quadro "+b.nome+" serão apagados para sempre.",
       onConfirm:async()=>{
         await db.from("boards").delete().eq("id",b.id);
         const rem=boards.filter(x=>x.id!==b.id);setBoards(rem);
