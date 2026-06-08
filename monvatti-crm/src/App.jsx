@@ -1301,143 +1301,302 @@ function ColumnManagerModal({board,onClose,onRefresh,toast}) {
 // ─────────────────────────────────────────────────────────────────────────────
 function ExportModal({board,onClose}) {
   const [busy,setBusy]=useState(false);
+  const [selCols,setSelCols]=useState(()=>new Set(board.columns.filter(c=>c.tipo!=="user").map(c=>c.id)));
   const toast=useToast();
+  const date=new Date().toLocaleDateString("pt-BR").replace(/\//g,"-");
+  const dateStr=new Date().toLocaleString("pt-BR");
 
-  const getRows=()=>{
-    const rows=[];
-    for(const g of board.groups){
-      rows.push({_group:g.nome,_color:g.color});
-      for(const item of g.items){
-        const row={_groupName:g.nome};
-        for(const col of board.columns){
-          if(col.tipo==="user") row[col.nome]="—";
-          else if(col.tipo==="calculated"){
-            const cC=board.columns.find(c=>c.tipo==="currency");
-            const pC=board.columns.find(c=>c.tipo==="number"&&c.nome.toLowerCase().includes("parcela"));
-            if(cC&&pC){const v=parseFloat(item.values?.[cC.id])||0,p=parseFloat(item.values?.[pC.id])||0;row[col.nome]=p>0?v/p:null;}
-            else row[col.nome]=null;
-          }else{
-            const v=item.values?.[col.id];
-            row[col.nome]=v!=null?String(v):"";
-          }
-        }
-        rows.push(row);
-      }
+  const visibleCols=board.columns.filter(c=>selCols.has(c.id));
+
+  const getCellVal=(item,col)=>{
+    if(col.tipo==="user") return "";
+    if(col.tipo==="calculated"){
+      const cC=board.columns.find(c=>c.tipo==="currency");
+      const pC=board.columns.find(c=>c.tipo==="number"&&c.nome.toLowerCase().includes("parcela"));
+      if(cC&&pC){const v=parseFloat(item.values?.[cC.id])||0,p=parseFloat(item.values?.[pC.id])||0;return p>0?v/p:0;}
+      return 0;
     }
-    return rows;
+    const v=item.values?.[col.id];
+    if(v==null||v==="") return "";
+    if(col.tipo==="currency") return parseFloat(v)||0;
+    if(col.tipo==="number") return parseFloat(v)||0;
+    if(col.tipo==="date") return fmtDate(v)||"";
+    return String(v);
   };
 
   const exportXLSX=()=>{
     setBusy(true);
     try{
+      const nl="\n";
       const wb=XLSX.utils.book_new();
-      const colNames=board.columns.map(c=>c.nome);
-      const wsData=[["Grupo",...colNames]];
-      const styles=[];
-      for(const g of board.groups){
-        styles.push({row:wsData.length,type:"group",color:g.color});
-        wsData.push([g.nome,...Array(colNames.length).fill("")]);
-        for(const item of g.items){
-          const row=[g.nome];
-          for(const col of board.columns){
-            if(col.tipo==="user"){ row.push(""); continue; }
-            if(col.tipo==="calculated"){
-              const cC=board.columns.find(c=>c.tipo==="currency");
-              const pC=board.columns.find(c=>c.tipo==="number"&&c.nome.toLowerCase().includes("parcela"));
-              if(cC&&pC){const v=parseFloat(item.values?.[cC.id])||0,p=parseFloat(item.values?.[pC.id])||0;row.push(p>0?(v/p):0);}
-              else row.push(0);
-              continue;
-            }
-            const v=item.values?.[col.id];
-            if(col.tipo==="currency"||col.tipo==="number") row.push(v!=null?Number(v):null);
-            else row.push(v!=null?String(v):"");
-          }
-          wsData.push(row);
-        }
-      }
-      const ws=XLSX.utils.aoa_to_sheet(wsData);
-      // Largura de colunas
-      ws["!cols"]=[{wch:18},...colNames.map(()=>({wch:22}))];
-      XLSX.utils.book_append_sheet(wb,ws,board.nome.substring(0,30));
-      XLSX.writeFile(wb,`${board.nome.replace(/\s+/g,"_")}_${new Date().toLocaleDateString("pt-BR").replace(/\//g,"-")}.xlsx`);
-      toast("Excel exportado!");
-    }catch(e){toast("Erro ao exportar","error");console.error(e);}
+
+      // ── Cores do tema ──────────────────────────────────────────────────────
+      const HEADER_BG="1E293B"; // azul-escuro cabeçalho
+      const HEADER_FG="FFFFFF";
+      const TOTAL_BG ="0F4C35"; // verde-escuro totais
+      const TOTAL_FG ="FFFFFF";
+      const GROUP_FG ="FFFFFF";
+      const ALT_BG   ="F8FAFC"; // cinza-claro linhas alternadas
+      const BORDER   ="B8BECE";
+
+      const fmtCur=v=>v!=null&&v!==""?fmtBRL(parseFloat(v)||0):"";
+      const fmtNum=v=>v!=null&&v!==""?String(parseFloat(v)||0):"";
+
+      // Converte hex do grupo para ARGB
+      const hexToARGB=h=>("FF"+(h||"4F46E5").replace("#","").toUpperCase().padStart(6,"0"));
+
+      const cellStyle=(opts={})=>({
+        font:{name:"Calibri",sz:opts.sz||10,...(opts.bold?{bold:true}:{}),...(opts.color?{color:{rgb:opts.color}}:{})},
+        fill:opts.fill?{fgColor:{rgb:opts.fill},patternType:"solid"}:{patternType:"none"},
+        alignment:{vertical:"center",horizontal:opts.align||"left",wrapText:false},
+        border:{top:{style:"thin",color:{rgb:BORDER}},bottom:{style:"thin",color:{rgb:BORDER}},
+                left:{style:"thin",color:{rgb:BORDER}},right:{style:"thin",color:{rgb:BORDER}}},
+      });
+
+      // ── Aba 1: Resumo ──────────────────────────────────────────────────────
+      const moneyColIdx=visibleCols.map((c,i)=>[c,i]).filter(([c])=>c.tipo==="currency"||c.tipo==="calculated").map(([_,i])=>i);
+      const summaryRows=[];
+      // Título
+      summaryRows.push([{v:"MONVATTI CRM — "+board.nome,s:cellStyle({bold:true,sz:14,color:HEADER_FG,fill:HEADER_BG,align:"center"})}]);
+      summaryRows.push([{v:"Exportado em: "+dateStr,s:cellStyle({sz:9,color:"64748B",align:"center"})}]);
+      summaryRows.push([{v:""}]);
+      // Cabeçalho resumo
+      summaryRows.push([
+        {v:"Grupo",s:cellStyle({bold:true,color:HEADER_FG,fill:HEADER_BG})},
+        {v:"Leads",s:cellStyle({bold:true,color:HEADER_FG,fill:HEADER_BG,align:"center"})},
+        ...visibleCols.filter(c=>c.tipo==="currency"||c.tipo==="calculated").map(c=>({v:"Total "+c.nome,s:cellStyle({bold:true,color:HEADER_FG,fill:HEADER_BG,align:"right"})}))
+      ]);
+      const allGroups=board.groups.filter(g=>(g.items||[]).length>0);
+      const grandTotal=visibleCols.filter(c=>c.tipo==="currency"||c.tipo==="calculated").map(()=>0);
+      allGroups.forEach(g=>{
+        const itens=g.items||[];
+        const sums=visibleCols.filter(c=>c.tipo==="currency"||c.tipo==="calculated")
+          .map((c,i)=>{const v=itens.reduce((s,it)=>s+(parseFloat(getCellVal(it,c))||0),0);grandTotal[i]+=v;return v;});
+        const gc=hexToARGB(g.color||"#4F46E5");
+        summaryRows.push([
+          {v:g.nome,s:cellStyle({bold:true,color:GROUP_FG,fill:gc.slice(2)})},
+          {v:itens.length,s:cellStyle({align:"center",fill:gc.slice(2),color:GROUP_FG})},
+          ...sums.map(s=>({v:fmtBRL(s),s:cellStyle({align:"right",fill:gc.slice(2),color:GROUP_FG})}))
+        ]);
+      });
+      summaryRows.push([
+        {v:"TOTAL GERAL",s:cellStyle({bold:true,color:TOTAL_FG,fill:TOTAL_BG})},
+        {v:allGroups.reduce((s,g)=>s+(g.items||[]).length,0),s:cellStyle({bold:true,align:"center",color:TOTAL_FG,fill:TOTAL_BG})},
+        ...grandTotal.map(v=>({v:fmtBRL(v),s:cellStyle({bold:true,align:"right",color:TOTAL_FG,fill:TOTAL_BG})}))
+      ]);
+      const wsSummary=XLSX.utils.aoa_to_sheet(summaryRows.map(r=>r.map(c=>typeof c==="object"&&"v" in c?c.v:c)));
+      // Aplicar estilos
+      summaryRows.forEach((row,ri)=>{row.forEach((cell,ci)=>{if(cell&&cell.s){const ref=XLSX.utils.encode_cell({r:ri,c:ci});if(!wsSummary[ref])wsSummary[ref]={};wsSummary[ref].s=cell.s;}});});
+      // Merge título nas colunas
+      const sumWidth=2+visibleCols.filter(c=>c.tipo==="currency"||c.tipo==="calculated").length;
+      wsSummary["!merges"]=[{s:{r:0,c:0},e:{r:0,c:sumWidth-1}},{s:{r:1,c:0},e:{r:1,c:sumWidth-1}}];
+      wsSummary["!cols"]=[{wch:28},{wch:10},...visibleCols.filter(c=>c.tipo==="currency"||c.tipo==="calculated").map(()=>({wch:18}))];
+      wsSummary["!rows"]=[{hpt:28},{hpt:16},{hpt:8},{hpt:20},...allGroups.map(()=>({hpt:20})),{hpt:22}];
+      XLSX.utils.book_append_sheet(wb,wsSummary,"Resumo");
+
+      // ── Aba 2: Dados detalhados ─────────────────────────────────────────────
+      const detailRows=[];
+      // Título
+      detailRows.push([{v:"MONVATTI CRM — "+board.nome,s:cellStyle({bold:true,sz:13,color:HEADER_FG,fill:HEADER_BG,align:"center"})}]);
+      detailRows.push([{v:""}]);
+      // Cabeçalho colunas
+      const colHeader=[{v:"Grupo",s:cellStyle({bold:true,color:HEADER_FG,fill:HEADER_BG})},...visibleCols.map(c=>({v:c.nome,s:cellStyle({bold:true,color:HEADER_FG,fill:HEADER_BG,align:c.tipo==="currency"||c.tipo==="number"||c.tipo==="calculated"?"right":"left"})}))];
+      detailRows.push(colHeader);
+      allGroups.forEach(g=>{
+        const gc=hexToARGB(g.color||"#4F46E5");
+        // Linha do grupo
+        const groupLabel=[{v:g.nome+" ("+((g.items||[]).length)+" leads)",s:cellStyle({bold:true,sz:11,color:GROUP_FG,fill:gc.slice(2)})},...visibleCols.map(()=>({v:"",s:cellStyle({fill:gc.slice(2)})}))];
+        detailRows.push(groupLabel);
+        const groupSubtotals=visibleCols.map(()=>0);
+        (g.items||[]).forEach((item,idx)=>{
+          const alt=idx%2===1;
+          const row=[{v:g.nome,s:cellStyle({color:"64748B",fill:alt?ALT_BG:undefined})},...visibleCols.map((c,ci)=>{
+            const v=getCellVal(item,c);
+            const isNum=c.tipo==="currency"||c.tipo==="calculated"||c.tipo==="number";
+            if(isNum&&v) groupSubtotals[ci]=(groupSubtotals[ci]||0)+parseFloat(v)||0;
+            const display=c.tipo==="currency"||c.tipo==="calculated"?fmtCur(v):c.tipo==="number"?fmtNum(v):String(v||"");
+            return {v:display,s:cellStyle({align:isNum?"right":"left",fill:alt?ALT_BG:undefined})};
+          })];
+          detailRows.push(row);
+        });
+        // Subtotal do grupo
+        const subtotalRow=[{v:"Subtotal — "+g.nome,s:cellStyle({bold:true,color:TOTAL_FG,fill:TOTAL_BG})},...visibleCols.map((c,ci)=>{
+          const isNum=c.tipo==="currency"||c.tipo==="calculated"||c.tipo==="number";
+          const v=isNum?groupSubtotals[ci]:null;
+          return {v:isNum?fmtBRL(v||0):"",s:cellStyle({bold:true,align:isNum?"right":"left",color:TOTAL_FG,fill:TOTAL_BG})};
+        })];
+        detailRows.push(subtotalRow);
+        detailRows.push([{v:""}]);
+      });
+      const wsDetail=XLSX.utils.aoa_to_sheet(detailRows.map(r=>r.map(c=>typeof c==="object"&&"v" in c?c.v:c)));
+      detailRows.forEach((row,ri)=>{row.forEach((cell,ci)=>{if(cell&&cell.s){const ref=XLSX.utils.encode_cell({r:ri,c:ci});if(!wsDetail[ref])wsDetail[ref]={};wsDetail[ref].s=cell.s;}});});
+      const numCols=1+visibleCols.length;
+      wsDetail["!merges"]=[{s:{r:0,c:0},e:{r:0,c:numCols-1}}];
+      wsDetail["!cols"]=[{wch:22},...visibleCols.map(c=>({wch:c.tipo==="currency"||c.tipo==="calculated"?16:c.tipo==="date"?13:20}))];
+      wsDetail["!rows"]=[{hpt:26},{hpt:6},{hpt:20}];
+      XLSX.utils.book_append_sheet(wb,wsDetail,board.nome.substring(0,30));
+
+      XLSX.writeFile(wb,board.nome.replace(/\s+/g,"_")+"_"+date+".xlsx");
+      toast("Excel exportado com sucesso!");
+    }catch(e){toast("Erro ao exportar Excel","error");console.error(e);}
     setBusy(false);
   };
 
   const exportPDF=()=>{
     setBusy(true);
     try{
-      const doc=new jsPDF({orientation:"landscape",unit:"mm",format:"a4"});
-      const colNames=board.columns.filter(c=>c.tipo!=="user"&&c.tipo!=="calculated").map(c=>c.nome);
-      const colIds=board.columns.filter(c=>c.tipo!=="user"&&c.tipo!=="calculated").map(c=>c.id);
+      const pdfCols=visibleCols.filter(c=>c.tipo!=="user");
+      const isLandscape=pdfCols.length>5;
+      const doc=new jsPDF({orientation:isLandscape?"landscape":"portrait",unit:"mm",format:"a4"});
+      const pageW=doc.internal.pageSize.getWidth();
+      const pageH=doc.internal.pageSize.getHeight();
+      const allGroups=board.groups.filter(g=>(g.items||[]).length>0);
+      const totalLeads=allGroups.reduce((s,g)=>s+(g.items||[]).length,0);
 
+      // ── Cabeçalho ─────────────────────────────────────────────────────────
+      doc.setFillColor(15,23,42);
+      doc.rect(0,0,pageW,24,"F");
+      // Ícone/nome do quadro
       doc.setFont("helvetica","bold");
-      doc.setFontSize(18);
-      doc.setTextColor(0,26,216);
-      doc.text(`${board.icon||""} ${board.nome}`, 14, 18);
-      doc.setFontSize(10);
-      doc.setTextColor(107,114,128);
-      doc.text(`Gerado em ${new Date().toLocaleString("pt-BR")}`, 14, 26);
+      doc.setFontSize(15);
+      doc.setTextColor(255,255,255);
+      doc.text((board.icon?board.icon+" ":"")+board.nome, 12, 11);
+      doc.setFont("helvetica","normal");
+      doc.setFontSize(8.5);
+      doc.setTextColor(148,163,184);
+      doc.text("Monvatti CRM  •  "+dateStr+"  •  "+totalLeads+" lead(s)  •  "+allGroups.length+" grupo(s)", 12, 19);
+      // Linha decorativa
+      doc.setDrawColor(59,130,246);
+      doc.setLineWidth(0.8);
+      doc.line(0,24,pageW,24);
 
+      // ── Tabela ─────────────────────────────────────────────────────────────
       const body=[];
-      for(const g of board.groups){
-        if(!g.items.length) continue;
-        body.push([{content:`📁 ${g.nome}`,colSpan:colNames.length,styles:{fontStyle:"bold",fillColor:[245,247,250],textColor:[43,51,59]}}]);
-        for(const item of g.items){
-          const row=[];
-          for(const col of board.columns.filter(c=>c.tipo!=="user"&&c.tipo!=="calculated")){
-            const v=item.values?.[col.id];
-            if(col.tipo==="currency") row.push(v!=null?fmtBRL(v):"");
-            else if(col.tipo==="date") row.push(v?fmtDate(v):"");
-            else row.push(v!=null?String(v):"");
-          }
-          body.push(row);
+      allGroups.forEach(g=>{
+        const hex=g.color||"#4F46E5";
+        const r=Math.min(255,parseInt(hex.slice(1,3),16)||79);
+        const gn=Math.min(255,parseInt(hex.slice(3,5),16)||70);
+        const b2=Math.min(255,parseInt(hex.slice(5,7),16)||229);
+        // Linha de grupo
+        body.push([{
+          content:g.nome.toUpperCase()+"  ("+((g.items||[]).length)+" leads)",
+          colSpan:pdfCols.length,
+          styles:{fontStyle:"bold",fontSize:8,fillColor:[r,gn,b2],textColor:[255,255,255],
+            cellPadding:{top:4,bottom:4,left:6,right:6},halign:"left"}
+        }]);
+        const subtotals=pdfCols.map(()=>0);
+        (g.items||[]).forEach((item,idx)=>{
+          body.push(pdfCols.map((col,ci)=>{
+            const v=getCellVal(item,col);
+            const isNum=col.tipo==="currency"||col.tipo==="calculated"||col.tipo==="number";
+            if(isNum&&v) subtotals[ci]=(subtotals[ci]||0)+(parseFloat(v)||0);
+            const display=col.tipo==="currency"||col.tipo==="calculated"?fmtBRL(parseFloat(v)||0):String(v||"");
+            return {content:v!=null&&v!==""?display:"—",styles:{halign:isNum?"right":"left",fontSize:7.5,
+              fillColor:idx%2===0?[255,255,255]:[248,250,252]}};
+          }));
+        });
+        // Subtotal por grupo
+        const hasMoney=pdfCols.some(c=>c.tipo==="currency"||c.tipo==="calculated");
+        if(hasMoney){
+          body.push(pdfCols.map((col,ci)=>{
+            const isNum=col.tipo==="currency"||col.tipo==="calculated"||col.tipo==="number";
+            return {
+              content:ci===0?"SUBTOTAL":isNum?fmtBRL(subtotals[ci]):"",
+              styles:{fontStyle:"bold",fontSize:7.5,fillColor:[15,71,44],textColor:[255,255,255],
+                halign:isNum?"right":"left",cellPadding:{top:3,bottom:3,left:6,right:6}}
+            };
+          }));
         }
-      }
-
-      autoTable(doc,{
-        head:[colNames],
-        body,
-        startY:32,
-        headStyles:{fillColor:[0,26,216],textColor:[255,255,255],fontStyle:"bold",fontSize:9},
-        bodyStyles:{fontSize:8,textColor:[43,51,59]},
-        alternateRowStyles:{fillColor:[248,249,252]},
-        tableLineColor:[229,231,235],
-        tableLineWidth:.3,
-        margin:{left:14,right:14},
+        body.push([{content:"",colSpan:pdfCols.length,styles:{fillColor:[255,255,255],cellPadding:1}}]);
       });
 
-      doc.save(`${board.nome.replace(/\s+/g,"_")}_${new Date().toLocaleDateString("pt-BR").replace(/\//g,"-")}.pdf`);
-      toast("PDF exportado!");
+      autoTable(doc,{
+        head:[pdfCols.map(c=>c.nome)],
+        body,
+        startY:27,
+        headStyles:{fillColor:[30,41,59],textColor:[255,255,255],fontStyle:"bold",fontSize:8,
+          cellPadding:{top:5,bottom:5,left:5,right:5}},
+        bodyStyles:{fontSize:8,textColor:[30,41,59],cellPadding:{top:3.5,bottom:3.5,left:5,right:5}},
+        tableLineColor:[203,213,225],
+        tableLineWidth:0.2,
+        margin:{left:8,right:8,top:27},
+        columnStyles:Object.fromEntries(pdfCols.map((c,i)=>[i,{
+          halign:c.tipo==="currency"||c.tipo==="calculated"||c.tipo==="number"?"right":"left",
+          minCellWidth:c.tipo==="currency"||c.tipo==="calculated"?22:c.tipo==="date"?16:undefined,
+        }])),
+        didDrawPage:(data)=>{
+          // Rodapé
+          const pg=doc.internal.getCurrentPageInfo().pageNumber;
+          const total=doc.internal.getNumberOfPages();
+          doc.setFillColor(15,23,42);
+          doc.rect(0,pageH-10,pageW,10,"F");
+          doc.setFont("helvetica","normal");
+          doc.setFontSize(7);
+          doc.setTextColor(148,163,184);
+          doc.text("Monvatti CRM — "+board.nome, 8, pageH-3.5);
+          doc.text("Pág. "+pg+" / "+total, pageW-8, pageH-3.5,{align:"right"});
+        },
+      });
+
+      doc.save(board.nome.replace(/\s+/g,"_")+"_"+date+".pdf");
+      toast("PDF exportado com sucesso!");
     }catch(e){toast("Erro ao exportar PDF","error");console.error(e);}
     setBusy(false);
   };
 
-  return (
-    <Modal title="Exportar relatório" onClose={onClose} width={440}>
-      <p style={{fontSize:13,color:"var(--text2)",marginBottom:24,lineHeight:1.6}}>
-        Os relatórios incluem todas as colunas visíveis do quadro <strong>{board.nome}</strong>, organizados por grupo.
-      </p>
-      <div style={{display:"flex",flexDirection:"column",gap:14}}>
-        <button onClick={exportXLSX} disabled={busy}
-          style={{...T.btn,background:"#059669",color:"#fff",padding:"16px 20px",justifyContent:"flex-start",gap:14,width:"100%"}}>
-          <span style={{fontSize:28}}>📊</span>
+    return (
+    <Modal title={"📤 Exportar — "+board.nome} onClose={onClose} width={520}>
+      {/* Seleção de colunas */}
+      <div style={{marginBottom:20}}>
+        <div style={{fontSize:12,fontWeight:700,color:"var(--text3)",textTransform:"uppercase",letterSpacing:.4,marginBottom:10}}>
+          Colunas a exportar
+        </div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:7}}>
+          {board.columns.filter(c=>c.tipo!=="user").map(col=>{
+            const on=selCols.has(col.id);
+            return (
+              <button key={col.id} onClick={()=>setSelCols(prev=>{const n=new Set(prev);on?n.delete(col.id):n.add(col.id);return n;})}
+                style={{padding:"5px 12px",borderRadius:20,border:"1.5px solid",fontSize:12,fontWeight:600,
+                  cursor:"pointer",transition:"all .15s",
+                  background:on?"var(--blue)":"var(--surface2)",
+                  color:on?"#fff":"var(--text2)",
+                  borderColor:on?"var(--blue)":"var(--border)"}}>
+                {col.nome}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{fontSize:11,color:"var(--text3)",marginTop:8}}>{selCols.size} coluna(s) selecionada(s)</div>
+      </div>
+
+      {/* Botões de exportação */}
+      <div style={{display:"flex",flexDirection:"column",gap:10}}>
+        <button onClick={exportXLSX} disabled={busy||selCols.size===0}
+          style={{...T.btn,background:"#059669",color:"#fff",padding:"14px 18px",
+            justifyContent:"flex-start",gap:14,width:"100%",opacity:selCols.size===0?.5:1}}>
+          <div style={{fontSize:26,lineHeight:1,flexShrink:0}}>📊</div>
           <div style={{textAlign:"left"}}>
-            <div style={{fontWeight:700}}>Exportar Excel (.xlsx)</div>
-            <div style={{fontSize:12,opacity:.85,fontWeight:400}}>Planilha editável com dados por grupo</div>
+            <div style={{fontWeight:700,fontSize:14}}>Exportar Excel (.xlsx)</div>
+            <div style={{fontSize:11,opacity:.85,fontWeight:400,marginTop:2}}>
+              2 abas: Resumo por grupo + dados detalhados com subtotais
+            </div>
           </div>
         </button>
-        <button onClick={exportPDF} disabled={busy}
-          style={{...T.btn,background:"#dc2626",color:"#fff",padding:"16px 20px",justifyContent:"flex-start",gap:14,width:"100%"}}>
-          <span style={{fontSize:28}}>📄</span>
+        <button onClick={exportPDF} disabled={busy||selCols.size===0}
+          style={{...T.btn,background:"#dc2626",color:"#fff",padding:"14px 18px",
+            justifyContent:"flex-start",gap:14,width:"100%",opacity:selCols.size===0?.5:1}}>
+          <div style={{fontSize:26,lineHeight:1,flexShrink:0}}>📄</div>
           <div style={{textAlign:"left"}}>
-            <div style={{fontWeight:700}}>Exportar PDF</div>
-            <div style={{fontSize:12,opacity:.85,fontWeight:400}}>Relatório formatado para impressão</div>
+            <div style={{fontWeight:700,fontSize:14}}>Exportar PDF</div>
+            <div style={{fontSize:11,opacity:.85,fontWeight:400,marginTop:2}}>
+              Relatório formatado com cores dos grupos, subtotais e paginação
+            </div>
           </div>
         </button>
       </div>
-      {busy&&<div style={{display:"flex",justifyContent:"center",marginTop:20}}><Spinner size={28}/></div>}
+      {busy&&<div style={{display:"flex",alignItems:"center",gap:10,marginTop:16,color:"var(--text3)",fontSize:13}}>
+        <Spinner size={20}/> Gerando arquivo…
+      </div>}
     </Modal>
   );
 }
@@ -1458,7 +1617,7 @@ function ItemMenuOpt({icon,label,onClick,danger=false}) {
 }
 
 function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,
-  onDragStart,onDragOver,onDrop,onUpdateValue,onRespChange,sentToNegIds=new Set()}) {
+  onDragStart,onDragOver,onDrop,onUpdateValue,onRespChange,sentToNegIds=new Set(),stickyFirstCols=0,colWidths=null}) {
   const [hov,setHov]=useState(false);
   const [menu,setMenu]=useState(false);
   const [menuPos,setMenuPos]=useState({top:0,right:0});
@@ -1485,9 +1644,10 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
       onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}
       style={{background:rowBg,transition:"background .1s"}}>
       {/* Célula de controles — layout original preservado, badge via borda + dot */}
-      <td style={{width:52,textAlign:"center",
-        borderLeft:`3px solid ${alreadySent?"#059669":gc}`,
-        verticalAlign:"middle",padding:"0 6px",flexShrink:0}}>
+      <td style={{width:52,textAlign:"center",borderLeft:`3px solid ${alreadySent?"#059669":gc}`,
+        verticalAlign:"middle",padding:"0 6px",flexShrink:0,
+        position:"sticky",left:0,zIndex:3,background:"var(--surface)",
+        boxShadow:"2px 0 0 var(--border)"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:5,position:"relative"}}>
           <button onClick={onOpen} title={alreadySent?"Atualizações (já enviado para Negociações)":"Atualizações"}
             style={{...T.iBtn,opacity:hov||selected?1:0.25,transition:"opacity .15s",fontSize:13,padding:"2px 3px",flexShrink:0,position:"relative"}}>
@@ -1501,13 +1661,14 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
         </div>
       </td>
       {columns.map(col=>(
-        <td key={col.id} style={{padding:"2px 3px",borderRight:"1px solid var(--border)",verticalAlign:"middle",maxWidth:220,overflow:"hidden"}}>
+        <td key={col.id} style={{padding:"2px 3px",borderRight:"1px solid var(--border)",verticalAlign:"middle",maxWidth:220,overflow:"hidden",
+          ...(stickyFirstCols>0&&columns.indexOf(col)<stickyFirstCols?{position:"sticky",left:(52+columns.slice(0,columns.indexOf(col)).reduce((s,_,i)=>s+(colWidths?.[i]||140),0))+"px",background:"var(--surface)",zIndex:2}:{})}}>
           <Cell col={col} values={item.values} allColumns={columns}
             responsibles={item.responsibles} allUsers={allUsers}
             onChange={v=>onUpdateValue(col.id,v)} onRespChange={onRespChange}/>
         </td>
       ))}
-      <td style={{width:72,padding:"0 6px",textAlign:"right",verticalAlign:"middle",flexShrink:0}}>
+      <td style={{width:40,padding:"0 3px",textAlign:"right",verticalAlign:"middle",flexShrink:0,position:"sticky",right:0,background:"var(--surface)",zIndex:2}}>
         <div style={{display:"flex",gap:4,justifyContent:"flex-end",opacity:hov||selected||menu?1:0,transition:"opacity .1s"}}>
           <button ref={btnRef} onClick={openMenu} title="Ações" style={T.iBtn}>⋯</button>
         </div>
@@ -1639,22 +1800,38 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
   onToggleItem,onSelectAll,onAddItem,onDelGroup,onRenameGroup,onToggle,
   onOpenItem,onUpdateValue,onRespChange,onDelItem,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,
   onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,sentToNegIds=new Set(),
-  sortCfg={colId:null,dir:1},setSortCfg=()=>{}}) {
+  sortCfg={colId:null,dir:1},setSortCfg=()=>{},stickyFirstCols=0}) {
   const [renaming,setRenaming]=useState(false);
   const [gname,setGname]=useState(group.nome);
   const [localCollapsed,setLocalCollapsed]=useState(true); // inicia minimizado
   // Usa collapsed do group prop se passado via sgCollapsed, senão estado local
-  const isCollapsed=group.collapsed!==undefined?group.collapsed:localCollapsed;
+  // collapsed: undefined/true = fechado, false = aberto
+  const isCollapsed=group.collapsed===false?false:localCollapsed;
   const toggleCollapsed=()=>{
-    if(group.collapsed!==undefined&&onToggle) onToggle();
+    if(onToggle) onToggle(); // sempre propaga ao board state
     else setLocalCollapsed(p=>!p);
   };
-  // Larguras de coluna redimensionáveis
+  // Larguras de coluna redimensionáveis com persistência em localStorage
+  const storageKey="colWidths_"+group.id;
   const defaultWidths=()=>columns.map(c=>
     c.tipo==="date"?105:c.tipo==="currency"||c.tipo==="number"||c.tipo==="calculated"?110:
     c.tipo==="user"?75:c.tipo==="status"?130:140
   );
-  const [colWidthsState,setColWidthsState]=useState(defaultWidths);
+  const [colWidthsState,setColWidthsState]=useState(()=>{
+    try{
+      const saved=localStorage.getItem(storageKey);
+      if(saved){
+        const parsed=JSON.parse(saved);
+        if(Array.isArray(parsed)&&parsed.length===columns.length) return parsed;
+      }
+    }catch(_){}
+    return defaultWidths();
+  });
+  // Persistir ao alterar
+  const setColWidths=newWidths=>{
+    setColWidthsState(newWidths);
+    try{ localStorage.setItem(storageKey,JSON.stringify(newWidths)); }catch(_){}
+  };
   const resizingRef=useRef(null); // {colIdx, startX, startW}
   const startResize=(e,colIdx)=>{
     e.preventDefault();
@@ -1662,7 +1839,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
     const onMove=ev=>{
       const {colIdx:ci,startX,startW}=resizingRef.current;
       const newW=Math.max(50,startW+(ev.clientX-startX));
-      setColWidthsState(prev=>{const next=[...prev];next[ci]=newW;return next;});
+      setColWidths(colWidthsState.map((w,i)=>i===ci?newW:w));
     };
     const onUp=()=>{
       resizingRef.current=null;
@@ -1688,12 +1865,13 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
 
   // Colgroup compartilhado — garante alinhamento exato entre header e body
   const colWidths=colWidthsState;
+  // setColWidths já definido acima com persistência
   const totalW=52+colWidths.reduce((s,w)=>s+w,0)+72;
   const cg=(
     <colgroup>
       <col style={{width:52}}/>
       {columns.map((col,i)=><col key={col.id} style={{width:colWidths[i]}}/>)}
-      <col style={{width:72}}/>
+      <col style={{width:40}}/>
     </colgroup>
   );
 
@@ -1743,7 +1921,9 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
               <tbody>
                 <tr style={{background:"var(--surface2)",borderBottom:"2px solid var(--border)"}}>
                   <th style={{width:52,padding:"7px 6px",textAlign:"center",
-                    borderLeft:`4px solid ${group.color}`,borderRight:"1px solid var(--border)"}}>
+                    borderLeft:`4px solid ${group.color}`,
+                    position:"sticky",left:0,zIndex:4,background:"var(--surface2)",
+                    boxShadow:"2px 0 0 var(--border)"}}>
                     <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
                       <span style={{fontSize:11,opacity:0,userSelect:"none"}}>📝</span>
                       <input type="checkbox" checked={allSel} onChange={()=>onSelectAll(items,!allSel)}
@@ -1765,7 +1945,10 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                           color:isActive?"var(--blue)":"var(--text3)",whiteSpace:"nowrap",
                           borderRight:"1px solid var(--border)",textTransform:"uppercase",letterSpacing:.4,
                           background:"var(--surface2)",cursor:"pointer",userSelect:"none",
-                          transition:"color .15s",position:"relative",overflow:"visible"}}>
+                          transition:"color .15s",position:stickyFirstCols>0&&columns.indexOf(col)<stickyFirstCols?"sticky":"relative",
+                          left:stickyFirstCols>0&&columns.indexOf(col)<stickyFirstCols?(52+columns.slice(0,columns.indexOf(col)).reduce((s,c,i)=>s+colWidths[i],0))+"px":undefined,
+                          zIndex:stickyFirstCols>0&&columns.indexOf(col)<stickyFirstCols?3:undefined,
+                          overflow:"visible"}}>
                         <div onClick={cycleSort} style={{display:"flex",alignItems:"center",gap:4,overflow:"hidden"}}
                           onMouseEnter={e=>{if(!isActive)e.currentTarget.parentElement.style.color="var(--text2)";}}
                           onMouseLeave={e=>{if(!isActive)e.currentTarget.parentElement.style.color="var(--text3)";}}>
@@ -1784,7 +1967,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                       </th>
                     );
                   })}
-                  <th style={{width:72,background:"var(--surface2)"}}/>
+                  <th style={{width:40,background:"var(--surface2)",position:"sticky",right:0,zIndex:4}}/>
                 </tr>
               </tbody>
             </table>
@@ -1826,7 +2009,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
 
           // ── Desktop: body com scroll horizontal sincronizado com o header ──
           : <>
-              <div ref={bodyRef} style={{overflowX:"auto",background:"var(--surface)"}} onScroll={syncHeader}>
+              <div ref={bodyRef} style={{overflowX:"auto",background:"var(--surface)",position:"relative"}} onScroll={syncHeader}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,tableLayout:"fixed"}}>
                   {cg}
                   <tbody>
@@ -1846,6 +2029,8 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                         onUpdateValue={(cid,v)=>onUpdateValue(item.id,cid,v)}
                         onRespChange={ids=>onRespChange(item.id,ids)}
                         sentToNegIds={sentToNegIds}
+                        stickyFirstCols={stickyFirstCols}
+                        colWidths={colWidths}
                       />
                     ))}
                   </tbody>
@@ -2241,9 +2426,63 @@ function ParentGroupModal({initial,allUsers,onSave,onCancel}) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// VENDAS FILTER BAR — barra de filtro de período para o quadro Vendas
+// ─────────────────────────────────────────────────────────────────────────────
+function VendasFilterBar({vendasFilter,setVendasFilter,visibleGroups}) {
+  const now=new Date();
+  const mesAtual=now.toISOString().slice(0,7);
+  const mesAnterior=new Date(now.getFullYear(),now.getMonth()-1,1).toISOString().slice(0,7);
+  const btn=(active)=>({
+    padding:"5px 14px",borderRadius:20,border:"1.5px solid",fontSize:12,fontWeight:700,
+    cursor:"pointer",transition:"all .15s",
+    background:active?"var(--blue)":"var(--surface)",
+    color:active?"#fff":"var(--text2)",
+    borderColor:active?"var(--blue)":"var(--border)",
+  });
+  const isMesAtual=vendasFilter.mode==="month"&&vendasFilter.month===mesAtual;
+  const isMesAnt=vendasFilter.mode==="month"&&vendasFilter.month===mesAnterior;
+  const isRange=vendasFilter.mode==="range";
+  const isAll=vendasFilter.mode==="all";
+  const totalLeads=visibleGroups.reduce((s,g)=>{
+    const items=g._isParent?(g.subGroups||[]).flatMap(sg=>sg.items||[]):g.items||[];
+    return s+items.length;
+  },0);
+  return (
+    <div style={{background:"var(--surface2)",borderBottom:"1px solid var(--border)",
+      padding:"8px 22px",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",flexShrink:0}}>
+      <span style={{fontSize:12,fontWeight:700,color:"var(--text3)",marginRight:2}}>📅 Período:</span>
+      <button style={btn(isMesAtual)} onClick={()=>setVendasFilter({mode:"month",month:mesAtual,start:"",end:""})}>Mês atual</button>
+      <button style={btn(isMesAnt)} onClick={()=>setVendasFilter({mode:"month",month:mesAnterior,start:"",end:""})}>Mês anterior</button>
+      <button style={btn(isAll)} onClick={()=>setVendasFilter({mode:"all",month:"",start:"",end:""})}>Todos</button>
+      <div style={{display:"flex",alignItems:"center",gap:6,marginLeft:4}}>
+        <input type="month" value={vendasFilter.mode==="month"?vendasFilter.month:""} max={mesAtual}
+          onChange={e=>setVendasFilter({mode:"month",month:e.target.value,start:"",end:""})}
+          style={{border:"1.5px solid var(--border)",borderRadius:8,padding:"4px 8px",fontSize:12,
+            background:"var(--surface)",color:"var(--text)",cursor:"pointer"}}/>
+      </div>
+      <span style={{fontSize:12,color:"var(--text3)",margin:"0 2px"}}>ou</span>
+      <div style={{display:"flex",alignItems:"center",gap:6}}>
+        <input type="date" value={vendasFilter.start}
+          onChange={e=>setVendasFilter(p=>({...p,mode:"range",start:e.target.value}))}
+          style={{border:"1.5px solid "+(isRange?"var(--blue)":"var(--border)"),borderRadius:8,
+            padding:"4px 8px",fontSize:12,background:"var(--surface)",color:"var(--text)"}}/>
+        <span style={{fontSize:11,color:"var(--text3)"}}>até</span>
+        <input type="date" value={vendasFilter.end}
+          onChange={e=>setVendasFilter(p=>({...p,mode:"range",end:e.target.value}))}
+          style={{border:"1.5px solid "+(isRange?"var(--blue)":"var(--border)"),borderRadius:8,
+            padding:"4px 8px",fontSize:12,background:"var(--surface)",color:"var(--text)"}}/>
+      </div>
+      <div style={{marginLeft:"auto",fontSize:12,color:"var(--text3)",fontWeight:600}}>
+        {totalLeads} lead(s) no período
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // BOARD VIEW
 // ─────────────────────────────────────────────────────────────────────────────
-function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountChange}) {
+function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,onBoardCountChange}) {
   const toast=useToast();
   const {isMobile}=useBreakpoint();
   const [board,setBoard]=useState(null);
@@ -2253,6 +2492,9 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
   const [filters,setFilters]=useState({});
   const [showFilters,setShowFilters]=useState(false);
   const [sortCfg,setSortCfg]=useState({colId:null,dir:1}); // dir: 1=asc, -1=desc
+  // Filtro de período para o quadro Vendas
+  const todayStr=new Date().toISOString().slice(0,7); // YYYY-MM
+  const [vendasFilter,setVendasFilter]=useState({mode:"month",month:todayStr,start:"",end:""});
   const [showColMgr,setShowColMgr]=useState(false);
   const [showExport,setShowExport]=useState(false);
   const [selected,setSelected]=useState(new Set());
@@ -2443,7 +2685,8 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
     }
   };
   const renameGroup=async(gid,nome)=>{upd(b=>{const g=b.groups.find(g=>g.id===gid);if(g)g.nome=nome;});await db.from("groups").update({nome}).eq("id",gid);};
-  const toggleGroup=gid=>upd(b=>{const g=b.groups.find(g=>g.id===gid);if(g)g.collapsed=!g.collapsed;});
+  // collapsed: undefined/true = fechado, false = aberto
+  const toggleGroup=gid=>upd(b=>{const g=b.groups.find(g=>g.id===gid);if(g)g.collapsed=g.collapsed===false?true:false;});
 
   // ── CRUD grupos mãe (Negociações hierárquico)
   const SUB_GRUPOS_PADRAO=[
@@ -2621,7 +2864,9 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
 
   // ── Enviar para Negociações (Pré-Vendas → Negociações) — modal 2 etapas
   const sendToNeg=async(gid,item)=>{
-    const negBoard=boards.find(b=>b.nome==="Negociações"||b.nome==="🤝 Negociações");
+    // Busca direto no DB para não depender do boards state filtrado por permissão
+    const {data:negBoardRow}=await db.from("boards").select("id,nome").eq("nome","Negociações").single();
+    const negBoard=negBoardRow;
     if(!negBoard){toast("Quadro 'Negociações' não encontrado. Verifique o nome exato.","error");return;}
     const {data:ngs}=await db.from("groups").select("*").eq("board_id",negBoard.id).order("ordem");
     if(!ngs?.length){toast("Nenhum grupo em Negociações","error");return;}
@@ -2933,6 +3178,7 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
   // Botões contextuais por quadro
   const isPreVendas      = board?.nome==="Pré - Vendas";     // botão → Negociações (todos)
   const isNegociacoes    = board?.nome==="Negociações";       // botão → Vendas (sendToVendas)
+  const isVendas         = board?.nome==="Vendas";            // filtro de período
   const canActions       = isPreVendas;                       // mover inativa habilitado no Pré-Vendas
 
   // ── Hierarquia de grupos
@@ -2946,8 +3192,22 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
       let gs=board.groups;
       if(perms.slug==="sdr") gs=gs.filter(g=>g.owner_id===currentUser?.id);
       else if(perms.slug==="closer") gs=gs.filter(g=>(groupAccess[g.id]||[]).includes(currentUser?.id));
+      // Para Vendas: aplica filtro de período adicional
+      const inVendasPeriod=isVendas?item=>{
+        const d=new Date(item.created_at);
+        if(vendasFilter.mode==="month"&&vendasFilter.month){
+          const[y,m]=vendasFilter.month.split("-");
+          const s=new Date(parseInt(y),parseInt(m)-1,1);
+          const e=new Date(parseInt(y),parseInt(m),1);
+          return d>=s&&d<e;
+        }
+        if(vendasFilter.mode==="range"&&vendasFilter.start&&vendasFilter.end){
+          return d>=new Date(vendasFilter.start)&&d<=new Date(vendasFilter.end+"T23:59:59");
+        }
+        return true;
+      }:null;
       // Aplica filtro/busca nos itens — grupos com 0 resultados ficam com items=[]
-      return gs.map(g=>({...g,items:applyFilters(g.items||[])}));
+      return gs.map(g=>({...g,items:applyFilters(inVendasPeriod?(g.items||[]).filter(inVendasPeriod):(g.items||[]))}));
     }
 
     // Para Negociações: retorna grupos mãe com seus sub-grupos embutidos
@@ -2982,7 +3242,7 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
     });
 
     return [...enriched,...legacyFiltered.map(g=>({...g,items:applyFilters(g.items||[])}))];
-  },[board,perms,currentUser,groupAccess,isNegociacoes,filters,search,sortCfg]);
+  },[board,perms,currentUser,groupAccess,isNegociacoes,isVendas,filters,search,sortCfg,vendasFilter]);
   const filterCount=(filters.status?.length||0)+(filters.resp?.length||0)+(filters.dateFrom?1:0)+(filters.dateTo?1:0)+(filters.month?1:0)+(search.trim()?1:0);
 
   if(loading) return <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}><Spinner size={40}/><span style={{color:"var(--text3)",fontSize:14}}>Carregando…</span></div>;
@@ -3042,7 +3302,12 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
         </div>}
       </div>
 
-      {/* Content */}
+      {/* Vendas: barra de filtro de período */}
+      {isVendas&&!isMobile&&<VendasFilterBar
+        vendasFilter={vendasFilter} setVendasFilter={setVendasFilter}
+        visibleGroups={visibleGroups}/>}
+
+            {/* Content */}
       <div style={{flex:1,overflowY:"auto",padding:isMobile?"8px 12px 120px":"8px 22px 120px"}}>
         {visibleGroups
           .map(group=>{
@@ -3110,6 +3375,7 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
                 onSendToVendas={isNegociacoes&&perms.sendToVendas?item=>sendToVendas(group.id,item):null}
                 sentToNegIds={sentToNegIds}
                 sortCfg={sortCfg} setSortCfg={setSortCfg}
+                stickyFirstCols={isVendas?2:0}
                 onDragStart={handleDragStart} onDragOver={e=>handleGroupDragOver(e,group.id)} onDrop={e=>handleGroupDrop(e,group.id)}
                 onItemDragOver={handleItemDragOver} onItemDrop={handleItemDrop}
                 onGroupSettings={perms.isFull||perms.all?()=>setGroupSettingsM(group):null}
@@ -3188,7 +3454,7 @@ function BoardView({boardId,boards,allUsers,currentUser,wsId,perms,onBoardCountC
       {moveItemsM&&board&&<MoveItemsModal
         items={getSelectedItems()}
         srcBoard={board}
-        allBoards={boards}
+        allBoards={perms.slug==="sdr"?(allBoardsRaw||boards).filter(b=>b.nome==="Negociações"):boards}
         onMove={async(destBid,movedItemIds,destGroup)=>{
           const cnt=[...selected].length;
           setMoveItemsM(false);
@@ -4973,6 +5239,7 @@ function AppContent() {
   const [wsId,setWsId]=useState(null);
   const [wsNome,setWsNome]=useState("");
   const [sidebarOpen,setSidebarOpen]=useState(false);
+  const [sidebarHover,setSidebarHover]=useState(false);
   const [confirmM,setConfirmM]=useState(null);
   const [boardFormM,setBoardFormM]=useState(null);
   const [boardSettingsM,setBoardSettingsM]=useState(null); // board obj
@@ -5141,7 +5408,58 @@ function AppContent() {
 
   return (
     <div style={{display:"flex",height:"100vh",width:"100%",overflow:"hidden",background:"var(--bg)"}}>
-      {!isMobile&&sidebar}
+      {!isMobile&&(
+        <div
+          onMouseEnter={()=>setSidebarHover(true)}
+          onMouseLeave={()=>setSidebarHover(false)}
+          style={{
+            flexShrink:0,
+            width:sidebarHover?242:56,
+            transition:"width .22s cubic-bezier(.4,0,.2,1)",
+            overflow:"hidden",
+            position:"relative",
+            zIndex:200,
+            background:"var(--sidebar)",
+          }}>
+          {/* Mini sidebar: ícones quando recolhida */}
+          {!sidebarHover&&(
+            <div style={{width:56,height:"100%",display:"flex",flexDirection:"column",
+              alignItems:"center",paddingTop:16,gap:4,overflowY:"auto"}}>
+              <div style={{width:36,height:36,background:"var(--alt)",borderRadius:10,
+                display:"flex",alignItems:"center",justifyContent:"center",
+                fontWeight:900,fontSize:18,color:"#fff",marginBottom:8,flexShrink:0}}>M</div>
+              <div onClick={()=>setPage("dashboard")} title="Dashboard"
+                style={{width:36,height:36,display:"flex",alignItems:"center",justifyContent:"center",
+                  borderRadius:8,cursor:"pointer",fontSize:18,color:"rgba(255,255,255,.6)",
+                  transition:"background .15s"}}
+                onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.12)"}
+                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>📊</div>
+              <div style={{width:28,height:1,background:"rgba(255,255,255,.1)",margin:"4px 0"}}/>
+              {visibleBoards.map(b=>(
+                <div key={b.id} onClick={()=>{setBoardId(b.id);setPage("board");}} title={b.nome}
+                  style={{width:36,height:36,display:"flex",alignItems:"center",justifyContent:"center",
+                    borderRadius:8,cursor:"pointer",fontSize:17,
+                    background:b.id===boardId?"rgba(255,255,255,.18)":"transparent",
+                    transition:"background .15s"}}
+                  onMouseEnter={e=>{if(b.id!==boardId)e.currentTarget.style.background="rgba(255,255,255,.1)";}}
+                  onMouseLeave={e=>{if(b.id!==boardId)e.currentTarget.style.background="transparent";}}>
+                  {b.icon||"📋"}
+                </div>
+              ))}
+              <div style={{flex:1}}/>
+              <div title={profile?.nome||"Perfil"}
+                style={{width:36,height:36,borderRadius:"50%",background:"var(--alt)",
+                  display:"flex",alignItems:"center",justifyContent:"center",
+                  fontSize:13,fontWeight:800,color:"#fff",marginBottom:12,cursor:"pointer",flexShrink:0}}
+                onClick={()=>setPage("profile")}>
+                {(profile?.nome||"?")[0].toUpperCase()}
+              </div>
+            </div>
+          )}
+          {/* Full sidebar: expandida ao hover */}
+          {sidebarHover&&<div style={{width:242,height:"100%",position:"absolute",top:0,left:0}}>{sidebar}</div>}
+        </div>
+      )}
       {isMobile&&sidebar}
       <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
         {/* Mobile top bar */}
@@ -5164,7 +5482,7 @@ function AppContent() {
           <DashboardPage onBack={()=>setPage("board")} wsId={wsId} allUsers={allUsers} perms={perms} profile={profile}/>
         )}
         {page==="board"&&(
-          <BoardView key={boardId} boardId={boardId} boards={visibleBoards} allUsers={allUsers}
+          <BoardView key={boardId} boardId={boardId} boards={visibleBoards} allBoardsRaw={boards} allUsers={allUsers}
             currentUser={profile} wsId={wsId} perms={perms} onBoardCountChange={bumpCount}/>
         )}
       </div>
