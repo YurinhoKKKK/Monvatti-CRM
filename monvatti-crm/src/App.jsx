@@ -1308,6 +1308,30 @@ function ExportModal({board,onClose}) {
 
   const visibleCols=board.columns.filter(c=>selCols.has(c.id));
 
+  // Achata grupos: resolve estrutura mãe/filho (Negociações) e grupos simples.
+  // board.groups já chega com itens pré-filtrados (applyFilters + vendasFilter aplicados no BoardView).
+  const flatGroups=(()=>{
+    const result=[];
+    for(const g of board.groups||[]){
+      if(g._isParent){
+        for(const sg of g.subGroups||[]){
+          if((sg.items||[]).length>0) result.push({...sg,_parentNome:g.nome,_parentColor:g.color});
+        }
+      } else {
+        if((g.items||[]).length>0) result.push(g);
+      }
+    }
+    return result;
+  })();
+
+  // Resolve cor de uma opção de status buscando nas options da coluna
+  const getStatusColor=(col,label)=>{
+    if(!label) return null;
+    const opts=resolveOpts(col.config?.options||[]);
+    const opt=opts.find(o=>o.label===label);
+    return opt?.color||SC[label]||null;
+  };
+
   const getCellVal=(item,col)=>{
     if(col.tipo==="user") return "";
     if(col.tipo==="calculated"){
@@ -1327,113 +1351,129 @@ function ExportModal({board,onClose}) {
   const exportXLSX=()=>{
     setBusy(true);
     try{
-      const nl="\n";
       const wb=XLSX.utils.book_new();
-
-      // ── Cores do tema ──────────────────────────────────────────────────────
-      const HEADER_BG="1E293B"; // azul-escuro cabeçalho
+      const HEADER_BG="1E293B";
       const HEADER_FG="FFFFFF";
-      const TOTAL_BG ="0F4C35"; // verde-escuro totais
+      const TOTAL_BG ="0F4C35";
       const TOTAL_FG ="FFFFFF";
       const GROUP_FG ="FFFFFF";
-      const ALT_BG   ="F8FAFC"; // cinza-claro linhas alternadas
-      const BORDER   ="B8BECE";
-
+      const ALT_BG   ="F1F5F9";
+      const BORDER   ="CBD5E1";
+      const TEXT_MAIN="1E293B";
+      const TEXT_MUTED="64748B";
       const fmtCur=v=>v!=null&&v!==""?fmtBRL(parseFloat(v)||0):"";
       const fmtNum=v=>v!=null&&v!==""?String(parseFloat(v)||0):"";
-
-      // Converte hex do grupo para ARGB
       const hexToARGB=h=>("FF"+(h||"4F46E5").replace("#","").toUpperCase().padStart(6,"0"));
-
+      // Clareia hex para fundo suave de badge (18% cor + 82% branco)
+      const hexToLightBg=h=>{
+        const r=parseInt((h||"#94a3b8").slice(1,3),16)||148;
+        const g=parseInt((h||"#94a3b8").slice(3,5),16)||163;
+        const b=parseInt((h||"#94a3b8").slice(5,7),16)||184;
+        return [Math.round(r*0.18+255*0.82),Math.round(g*0.18+255*0.82),Math.round(b*0.18+255*0.82)]
+          .map(x=>x.toString(16).padStart(2,"0").toUpperCase()).join("");
+      };
       const cellStyle=(opts={})=>({
-        font:{name:"Calibri",sz:opts.sz||10,...(opts.bold?{bold:true}:{}),...(opts.color?{color:{rgb:opts.color}}:{})},
+        font:{name:"Calibri",sz:opts.sz||10,...(opts.bold?{bold:true}:{}),...(opts.italic?{italic:true}:{}),...(opts.color?{color:{rgb:opts.color}}:{})},
         fill:opts.fill?{fgColor:{rgb:opts.fill},patternType:"solid"}:{patternType:"none"},
-        alignment:{vertical:"center",horizontal:opts.align||"left",wrapText:false},
+        alignment:{vertical:"center",horizontal:opts.align||"left",wrapText:opts.wrap||false},
         border:{top:{style:"thin",color:{rgb:BORDER}},bottom:{style:"thin",color:{rgb:BORDER}},
                 left:{style:"thin",color:{rgb:BORDER}},right:{style:"thin",color:{rgb:BORDER}}},
       });
+      const moneyCols=visibleCols.filter(c=>c.tipo==="currency"||c.tipo==="calculated");
 
       // ── Aba 1: Resumo ──────────────────────────────────────────────────────
-      const moneyColIdx=visibleCols.map((c,i)=>[c,i]).filter(([c])=>c.tipo==="currency"||c.tipo==="calculated").map(([_,i])=>i);
       const summaryRows=[];
-      // Título
-      summaryRows.push([{v:"MONVATTI CRM — "+board.nome,s:cellStyle({bold:true,sz:14,color:HEADER_FG,fill:HEADER_BG,align:"center"})}]);
-      summaryRows.push([{v:"Exportado em: "+dateStr,s:cellStyle({sz:9,color:"64748B",align:"center"})}]);
+      summaryRows.push([{v:"MONVATTI CRM — "+board.nome,s:cellStyle({bold:true,sz:15,color:HEADER_FG,fill:HEADER_BG,align:"center"})}]);
+      summaryRows.push([{v:"Exportado em: "+dateStr,s:cellStyle({sz:9,color:TEXT_MUTED,align:"center"})}]);
       summaryRows.push([{v:""}]);
-      // Cabeçalho resumo
       summaryRows.push([
-        {v:"Grupo",s:cellStyle({bold:true,color:HEADER_FG,fill:HEADER_BG})},
-        {v:"Leads",s:cellStyle({bold:true,color:HEADER_FG,fill:HEADER_BG,align:"center"})},
-        ...visibleCols.filter(c=>c.tipo==="currency"||c.tipo==="calculated").map(c=>({v:"Total "+c.nome,s:cellStyle({bold:true,color:HEADER_FG,fill:HEADER_BG,align:"right"})}))
+        {v:"Grupo",s:cellStyle({bold:true,sz:11,color:HEADER_FG,fill:HEADER_BG})},
+        {v:"Leads",s:cellStyle({bold:true,sz:11,color:HEADER_FG,fill:HEADER_BG,align:"center"})},
+        ...moneyCols.map(c=>({v:"Total "+c.nome,s:cellStyle({bold:true,sz:11,color:HEADER_FG,fill:HEADER_BG,align:"right"})}))
       ]);
-      const allGroups=board.groups.filter(g=>(g.items||[]).length>0);
-      const grandTotal=visibleCols.filter(c=>c.tipo==="currency"||c.tipo==="calculated").map(()=>0);
-      allGroups.forEach(g=>{
+      const grandTotal=moneyCols.map(()=>0);
+      flatGroups.forEach(g=>{
         const itens=g.items||[];
-        const sums=visibleCols.filter(c=>c.tipo==="currency"||c.tipo==="calculated")
-          .map((c,i)=>{const v=itens.reduce((s,it)=>s+(parseFloat(getCellVal(it,c))||0),0);grandTotal[i]+=v;return v;});
+        const sums=moneyCols.map((c,i)=>{const v=itens.reduce((s,it)=>s+(parseFloat(getCellVal(it,c))||0),0);grandTotal[i]+=v;return v;});
         const gc=hexToARGB(g.color||"#4F46E5");
+        const parentLabel=g._parentNome?" ("+g._parentNome+")":"";
         summaryRows.push([
-          {v:g.nome,s:cellStyle({bold:true,color:GROUP_FG,fill:gc.slice(2)})},
-          {v:itens.length,s:cellStyle({align:"center",fill:gc.slice(2),color:GROUP_FG})},
-          ...sums.map(s=>({v:fmtBRL(s),s:cellStyle({align:"right",fill:gc.slice(2),color:GROUP_FG})}))
+          {v:g.nome+parentLabel,s:cellStyle({bold:true,sz:10,color:GROUP_FG,fill:gc.slice(2)})},
+          {v:itens.length,s:cellStyle({align:"center",sz:10,fill:gc.slice(2),color:GROUP_FG})},
+          ...sums.map(s=>({v:fmtBRL(s),s:cellStyle({align:"right",sz:10,fill:gc.slice(2),color:GROUP_FG})}))
         ]);
       });
       summaryRows.push([
-        {v:"TOTAL GERAL",s:cellStyle({bold:true,color:TOTAL_FG,fill:TOTAL_BG})},
-        {v:allGroups.reduce((s,g)=>s+(g.items||[]).length,0),s:cellStyle({bold:true,align:"center",color:TOTAL_FG,fill:TOTAL_BG})},
-        ...grandTotal.map(v=>({v:fmtBRL(v),s:cellStyle({bold:true,align:"right",color:TOTAL_FG,fill:TOTAL_BG})}))
+        {v:"TOTAL GERAL",s:cellStyle({bold:true,sz:11,color:TOTAL_FG,fill:TOTAL_BG})},
+        {v:flatGroups.reduce((s,g)=>s+(g.items||[]).length,0),s:cellStyle({bold:true,align:"center",sz:11,color:TOTAL_FG,fill:TOTAL_BG})},
+        ...grandTotal.map(v=>({v:fmtBRL(v),s:cellStyle({bold:true,align:"right",sz:11,color:TOTAL_FG,fill:TOTAL_BG})}))
       ]);
       const wsSummary=XLSX.utils.aoa_to_sheet(summaryRows.map(r=>r.map(c=>typeof c==="object"&&"v" in c?c.v:c)));
-      // Aplicar estilos
-      summaryRows.forEach((row,ri)=>{row.forEach((cell,ci)=>{if(cell&&cell.s){const ref=XLSX.utils.encode_cell({r:ri,c:ci});if(!wsSummary[ref])wsSummary[ref]={};wsSummary[ref].s=cell.s;}});});
-      // Merge título nas colunas
-      const sumWidth=2+visibleCols.filter(c=>c.tipo==="currency"||c.tipo==="calculated").length;
+      summaryRows.forEach((row,ri)=>{row.forEach((cell,ci)=>{if(cell?.s){const ref=XLSX.utils.encode_cell({r:ri,c:ci});if(!wsSummary[ref])wsSummary[ref]={};wsSummary[ref].s=cell.s;}});});
+      const sumWidth=2+moneyCols.length;
       wsSummary["!merges"]=[{s:{r:0,c:0},e:{r:0,c:sumWidth-1}},{s:{r:1,c:0},e:{r:1,c:sumWidth-1}}];
-      wsSummary["!cols"]=[{wch:28},{wch:10},...visibleCols.filter(c=>c.tipo==="currency"||c.tipo==="calculated").map(()=>({wch:18}))];
-      wsSummary["!rows"]=[{hpt:28},{hpt:16},{hpt:8},{hpt:20},...allGroups.map(()=>({hpt:20})),{hpt:22}];
+      wsSummary["!cols"]=[{wch:32},{wch:10},...moneyCols.map(()=>({wch:20}))];
+      wsSummary["!rows"]=[{hpt:32},{hpt:18},{hpt:8},{hpt:22},...flatGroups.map(()=>({hpt:22})),{hpt:24}];
       XLSX.utils.book_append_sheet(wb,wsSummary,"Resumo");
 
       // ── Aba 2: Dados detalhados ─────────────────────────────────────────────
       const detailRows=[];
-      // Título
-      detailRows.push([{v:"MONVATTI CRM — "+board.nome,s:cellStyle({bold:true,sz:13,color:HEADER_FG,fill:HEADER_BG,align:"center"})}]);
+      detailRows.push([{v:"MONVATTI CRM — "+board.nome,s:cellStyle({bold:true,sz:14,color:HEADER_FG,fill:HEADER_BG,align:"center"})}]);
+      detailRows.push([{v:"Exportado em: "+dateStr,s:cellStyle({sz:9,color:TEXT_MUTED,align:"center"})}]);
       detailRows.push([{v:""}]);
-      // Cabeçalho colunas
-      const colHeader=[{v:"Grupo",s:cellStyle({bold:true,color:HEADER_FG,fill:HEADER_BG})},...visibleCols.map(c=>({v:c.nome,s:cellStyle({bold:true,color:HEADER_FG,fill:HEADER_BG,align:c.tipo==="currency"||c.tipo==="number"||c.tipo==="calculated"?"right":"left"})}))];
-      detailRows.push(colHeader);
-      allGroups.forEach(g=>{
+      detailRows.push([
+        {v:"Grupo",s:cellStyle({bold:true,sz:11,color:HEADER_FG,fill:HEADER_BG})},
+        ...visibleCols.map(c=>({v:c.nome,s:cellStyle({bold:true,sz:11,color:HEADER_FG,fill:HEADER_BG,align:c.tipo==="currency"||c.tipo==="number"||c.tipo==="calculated"?"right":"left"})}))
+      ]);
+      flatGroups.forEach(g=>{
         const gc=hexToARGB(g.color||"#4F46E5");
-        // Linha do grupo
-        const groupLabel=[{v:g.nome+" ("+((g.items||[]).length)+" leads)",s:cellStyle({bold:true,sz:11,color:GROUP_FG,fill:gc.slice(2)})},...visibleCols.map(()=>({v:"",s:cellStyle({fill:gc.slice(2)})}))];
-        detailRows.push(groupLabel);
+        const parentLabel=g._parentNome?" — "+g._parentNome:"";
+        detailRows.push([
+          {v:g.nome+parentLabel+" ("+((g.items||[]).length)+" leads)",s:cellStyle({bold:true,sz:11,color:GROUP_FG,fill:gc.slice(2)})},
+          ...visibleCols.map(()=>({v:"",s:cellStyle({fill:gc.slice(2)})}))
+        ]);
         const groupSubtotals=visibleCols.map(()=>0);
         (g.items||[]).forEach((item,idx)=>{
           const alt=idx%2===1;
-          const row=[{v:g.nome,s:cellStyle({color:"64748B",fill:alt?ALT_BG:undefined})},...visibleCols.map((c,ci)=>{
-            const v=getCellVal(item,c);
-            const isNum=c.tipo==="currency"||c.tipo==="calculated"||c.tipo==="number";
-            if(isNum&&v) groupSubtotals[ci]=(groupSubtotals[ci]||0)+parseFloat(v)||0;
-            const display=c.tipo==="currency"||c.tipo==="calculated"?fmtCur(v):c.tipo==="number"?fmtNum(v):String(v||"");
-            return {v:display,s:cellStyle({align:isNum?"right":"left",fill:alt?ALT_BG:undefined})};
-          })];
+          const rowBg=alt?ALT_BG:undefined;
+          const row=[
+            {v:g.nome,s:cellStyle({sz:9,color:TEXT_MUTED,fill:rowBg})},
+            ...visibleCols.map((c,ci)=>{
+              const v=getCellVal(item,c);
+              const isNum=c.tipo==="currency"||c.tipo==="calculated"||c.tipo==="number";
+              const isMoney=c.tipo==="currency"||c.tipo==="calculated"; if(isMoney&&v) groupSubtotals[ci]=(groupSubtotals[ci]||0)+(parseFloat(v)||0);
+              if(c.tipo==="status"&&v){
+                const sColor=getStatusColor(c,String(v));
+                if(sColor){
+                  const sBg=hexToLightBg(sColor);
+                  const sFg=sColor.replace("#","").toUpperCase().padStart(6,"0");
+                  return {v:String(v),s:cellStyle({align:"center",fill:sBg,color:sFg,bold:true,sz:9})};
+                }
+              }
+              const display=c.tipo==="currency"||c.tipo==="calculated"?fmtCur(v):c.tipo==="number"?fmtNum(v):String(v||"");
+              return {v:display,s:cellStyle({align:isNum?"right":"left",fill:rowBg,sz:9,color:TEXT_MAIN})};
+            })
+          ];
           detailRows.push(row);
         });
-        // Subtotal do grupo
-        const subtotalRow=[{v:"Subtotal — "+g.nome,s:cellStyle({bold:true,color:TOTAL_FG,fill:TOTAL_BG})},...visibleCols.map((c,ci)=>{
-          const isNum=c.tipo==="currency"||c.tipo==="calculated"||c.tipo==="number";
-          const v=isNum?groupSubtotals[ci]:null;
-          return {v:isNum?fmtBRL(v||0):"",s:cellStyle({bold:true,align:isNum?"right":"left",color:TOTAL_FG,fill:TOTAL_BG})};
-        })];
-        detailRows.push(subtotalRow);
+        const hasMoney=visibleCols.some(c=>c.tipo==="currency"||c.tipo==="calculated");
+        if(hasMoney){
+          detailRows.push([
+            {v:"Subtotal — "+g.nome,s:cellStyle({bold:true,sz:10,color:TOTAL_FG,fill:TOTAL_BG})},
+            ...visibleCols.map((c,ci)=>{
+              const isNum=c.tipo==="currency"||c.tipo==="calculated"||c.tipo==="number";
+              const isMoney2=c.tipo==="currency"||c.tipo==="calculated"; return {v:isMoney2?fmtBRL(groupSubtotals[ci]||0):"",s:cellStyle({bold:true,sz:10,align:isMoney2?"right":"left",color:TOTAL_FG,fill:TOTAL_BG})};
+            })
+          ]);
+        }
         detailRows.push([{v:""}]);
       });
       const wsDetail=XLSX.utils.aoa_to_sheet(detailRows.map(r=>r.map(c=>typeof c==="object"&&"v" in c?c.v:c)));
-      detailRows.forEach((row,ri)=>{row.forEach((cell,ci)=>{if(cell&&cell.s){const ref=XLSX.utils.encode_cell({r:ri,c:ci});if(!wsDetail[ref])wsDetail[ref]={};wsDetail[ref].s=cell.s;}});});
+      detailRows.forEach((row,ri)=>{row.forEach((cell,ci)=>{if(cell?.s){const ref=XLSX.utils.encode_cell({r:ri,c:ci});if(!wsDetail[ref])wsDetail[ref]={};wsDetail[ref].s=cell.s;}});});
       const numCols=1+visibleCols.length;
-      wsDetail["!merges"]=[{s:{r:0,c:0},e:{r:0,c:numCols-1}}];
-      wsDetail["!cols"]=[{wch:22},...visibleCols.map(c=>({wch:c.tipo==="currency"||c.tipo==="calculated"?16:c.tipo==="date"?13:20}))];
-      wsDetail["!rows"]=[{hpt:26},{hpt:6},{hpt:20}];
+      wsDetail["!merges"]=[{s:{r:0,c:0},e:{r:0,c:numCols-1}},{s:{r:1,c:0},e:{r:1,c:numCols-1}}];
+      wsDetail["!cols"]=[{wch:24},...visibleCols.map(c=>({wch:c.tipo==="currency"||c.tipo==="calculated"?18:c.tipo==="date"?14:c.tipo==="status"?18:22}))];
+      wsDetail["!rows"]=[{hpt:30},{hpt:16},{hpt:8},{hpt:22}];
       XLSX.utils.book_append_sheet(wb,wsDetail,board.nome.substring(0,30));
 
       XLSX.writeFile(wb,board.nome.replace(/\s+/g,"_")+"_"+date+".xlsx");
@@ -1450,82 +1490,90 @@ function ExportModal({board,onClose}) {
       const doc=new jsPDF({orientation:isLandscape?"landscape":"portrait",unit:"mm",format:"a4"});
       const pageW=doc.internal.pageSize.getWidth();
       const pageH=doc.internal.pageSize.getHeight();
-      const allGroups=board.groups.filter(g=>(g.items||[]).length>0);
-      const totalLeads=allGroups.reduce((s,g)=>s+(g.items||[]).length,0);
+      const totalLeads=flatGroups.reduce((s,g)=>s+(g.items||[]).length,0);
 
       // ── Cabeçalho ─────────────────────────────────────────────────────────
       doc.setFillColor(15,23,42);
-      doc.rect(0,0,pageW,24,"F");
-      // Ícone/nome do quadro
+      doc.rect(0,0,pageW,26,"F");
       doc.setFont("helvetica","bold");
-      doc.setFontSize(15);
+      doc.setFontSize(14);
       doc.setTextColor(255,255,255);
-      doc.text((board.icon?board.icon+" ":"")+board.nome, 12, 11);
+      doc.text((board.icon?board.icon+" ":"")+board.nome,12,12);
       doc.setFont("helvetica","normal");
-      doc.setFontSize(8.5);
+      doc.setFontSize(8);
       doc.setTextColor(148,163,184);
-      doc.text("Monvatti CRM  •  "+dateStr+"  •  "+totalLeads+" lead(s)  •  "+allGroups.length+" grupo(s)", 12, 19);
-      // Linha decorativa
-      doc.setDrawColor(59,130,246);
-      doc.setLineWidth(0.8);
-      doc.line(0,24,pageW,24);
+      doc.text("Monvatti CRM  •  "+dateStr+"  •  "+totalLeads+" lead(s)  •  "+flatGroups.length+" grupo(s)",12,20);
+      doc.setDrawColor(49,69,255);
+      doc.setLineWidth(0.7);
+      doc.line(0,26,pageW,26);
+
+      const hexRGB=h=>{
+        const hx=(h||"#4F46E5").replace("#","");
+        return [parseInt(hx.slice(0,2),16)||79,parseInt(hx.slice(2,4),16)||70,parseInt(hx.slice(4,6),16)||229];
+      };
+      const lightRGB=([r,g,b])=>[Math.round(r*0.18+255*0.82),Math.round(g*0.18+255*0.82),Math.round(b*0.18+255*0.82)];
 
       // ── Tabela ─────────────────────────────────────────────────────────────
       const body=[];
-      allGroups.forEach(g=>{
-        const hex=g.color||"#4F46E5";
-        const r=Math.min(255,parseInt(hex.slice(1,3),16)||79);
-        const gn=Math.min(255,parseInt(hex.slice(3,5),16)||70);
-        const b2=Math.min(255,parseInt(hex.slice(5,7),16)||229);
-        // Linha de grupo
+      flatGroups.forEach(g=>{
+        const [r,gn,b2]=hexRGB(g.color||"#4F46E5");
+        const parentLabel=g._parentNome?" — "+g._parentNome:"";
         body.push([{
-          content:g.nome.toUpperCase()+"  ("+((g.items||[]).length)+" leads)",
+          content:(g.nome+parentLabel).toUpperCase()+"   ("+((g.items||[]).length)+" leads)",
           colSpan:pdfCols.length,
           styles:{fontStyle:"bold",fontSize:8,fillColor:[r,gn,b2],textColor:[255,255,255],
             cellPadding:{top:4,bottom:4,left:6,right:6},halign:"left"}
         }]);
         const subtotals=pdfCols.map(()=>0);
         (g.items||[]).forEach((item,idx)=>{
+          const rowBg=idx%2===0?[255,255,255]:[241,245,249];
           body.push(pdfCols.map((col,ci)=>{
             const v=getCellVal(item,col);
             const isNum=col.tipo==="currency"||col.tipo==="calculated"||col.tipo==="number";
-            if(isNum&&v) subtotals[ci]=(subtotals[ci]||0)+(parseFloat(v)||0);
+            const isMoney=col.tipo==="currency"||col.tipo==="calculated"; if(isMoney&&v) subtotals[ci]=(subtotals[ci]||0)+(parseFloat(v)||0);
             const display=col.tipo==="currency"||col.tipo==="calculated"?fmtBRL(parseFloat(v)||0):String(v||"");
-            return {content:v!=null&&v!==""?display:"—",styles:{halign:isNum?"right":"left",fontSize:7.5,
-              fillColor:idx%2===0?[255,255,255]:[248,250,252]}};
+            if(col.tipo==="status"&&v){
+              const sColor=getStatusColor(col,String(v));
+              if(sColor){
+                const [sr,sg2,sb]=hexRGB(sColor);
+                const [lr,lg,lb]=lightRGB([sr,sg2,sb]);
+                return {content:String(v),styles:{halign:"center",fontSize:7,fontStyle:"bold",
+                  fillColor:[lr,lg,lb],textColor:[sr,sg2,sb],
+                  cellPadding:{top:3,bottom:3,left:4,right:4}}};
+              }
+            }
+            return {content:v!=null&&v!==""?display:"—",styles:{
+              halign:isNum?"right":"left",fontSize:7.5,
+              fillColor:rowBg,textColor:[30,41,59],
+              cellPadding:{top:3.5,bottom:3.5,left:5,right:5}}};
           }));
         });
-        // Subtotal por grupo
         const hasMoney=pdfCols.some(c=>c.tipo==="currency"||c.tipo==="calculated");
         if(hasMoney){
           body.push(pdfCols.map((col,ci)=>{
-            const isNum=col.tipo==="currency"||col.tipo==="calculated"||col.tipo==="number";
-            return {
-              content:ci===0?"SUBTOTAL":isNum?fmtBRL(subtotals[ci]):"",
+            const isMoney2=col.tipo==="currency"||col.tipo==="calculated"; return {content:ci===0?"SUBTOTAL":isMoney2?fmtBRL(subtotals[ci]):"",
               styles:{fontStyle:"bold",fontSize:7.5,fillColor:[15,71,44],textColor:[255,255,255],
-                halign:isNum?"right":"left",cellPadding:{top:3,bottom:3,left:6,right:6}}
-            };
+                halign:isMoney2?"right":"left",cellPadding:{top:3,bottom:3,left:6,right:6}}};
           }));
         }
-        body.push([{content:"",colSpan:pdfCols.length,styles:{fillColor:[255,255,255],cellPadding:1}}]);
+        body.push([{content:"",colSpan:pdfCols.length,styles:{fillColor:[255,255,255],cellPadding:{top:1.5,bottom:1.5,left:0,right:0}}}]);
       });
 
       autoTable(doc,{
         head:[pdfCols.map(c=>c.nome)],
         body,
-        startY:27,
+        startY:29,
         headStyles:{fillColor:[30,41,59],textColor:[255,255,255],fontStyle:"bold",fontSize:8,
           cellPadding:{top:5,bottom:5,left:5,right:5}},
-        bodyStyles:{fontSize:8,textColor:[30,41,59],cellPadding:{top:3.5,bottom:3.5,left:5,right:5}},
+        bodyStyles:{fontSize:7.5,textColor:[30,41,59],cellPadding:{top:3.5,bottom:3.5,left:5,right:5}},
         tableLineColor:[203,213,225],
         tableLineWidth:0.2,
-        margin:{left:8,right:8,top:27},
+        margin:{left:8,right:8,top:29},
         columnStyles:Object.fromEntries(pdfCols.map((c,i)=>[i,{
           halign:c.tipo==="currency"||c.tipo==="calculated"||c.tipo==="number"?"right":"left",
-          minCellWidth:c.tipo==="currency"||c.tipo==="calculated"?22:c.tipo==="date"?16:undefined,
+          minCellWidth:c.tipo==="currency"||c.tipo==="calculated"?24:c.tipo==="date"?18:c.tipo==="status"?20:undefined,
         }])),
-        didDrawPage:(data)=>{
-          // Rodapé
+        didDrawPage:()=>{
           const pg=doc.internal.getCurrentPageInfo().pageNumber;
           const total=doc.internal.getNumberOfPages();
           doc.setFillColor(15,23,42);
@@ -1533,8 +1581,8 @@ function ExportModal({board,onClose}) {
           doc.setFont("helvetica","normal");
           doc.setFontSize(7);
           doc.setTextColor(148,163,184);
-          doc.text("Monvatti CRM — "+board.nome, 8, pageH-3.5);
-          doc.text("Pág. "+pg+" / "+total, pageW-8, pageH-3.5,{align:"right"});
+          doc.text("Monvatti CRM — "+board.nome,8,pageH-3.5);
+          doc.text("Pág. "+pg+" / "+total,pageW-8,pageH-3.5,{align:"right"});
         },
       });
 
@@ -1544,9 +1592,8 @@ function ExportModal({board,onClose}) {
     setBusy(false);
   };
 
-    return (
+  return (
     <Modal title={"📤 Exportar — "+board.nome} onClose={onClose} width={520}>
-      {/* Seleção de colunas */}
       <div style={{marginBottom:20}}>
         <div style={{fontSize:12,fontWeight:700,color:"var(--text3)",textTransform:"uppercase",letterSpacing:.4,marginBottom:10}}>
           Colunas a exportar
@@ -1566,10 +1613,10 @@ function ExportModal({board,onClose}) {
             );
           })}
         </div>
-        <div style={{fontSize:11,color:"var(--text3)",marginTop:8}}>{selCols.size} coluna(s) selecionada(s)</div>
+        <div style={{fontSize:11,color:"var(--text3)",marginTop:8}}>
+          {selCols.size} coluna(s) · {flatGroups.reduce((s,g)=>s+(g.items||[]).length,0)} lead(s) filtrado(s)
+        </div>
       </div>
-
-      {/* Botões de exportação */}
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         <button onClick={exportXLSX} disabled={busy||selCols.size===0}
           style={{...T.btn,background:"#059669",color:"#fff",padding:"14px 18px",
@@ -1578,7 +1625,7 @@ function ExportModal({board,onClose}) {
           <div style={{textAlign:"left"}}>
             <div style={{fontWeight:700,fontSize:14}}>Exportar Excel (.xlsx)</div>
             <div style={{fontSize:11,opacity:.85,fontWeight:400,marginTop:2}}>
-              2 abas: Resumo por grupo + dados detalhados com subtotais
+              2 abas: Resumo por grupo + dados detalhados com cores de status e subtotais
             </div>
           </div>
         </button>
@@ -1589,7 +1636,7 @@ function ExportModal({board,onClose}) {
           <div style={{textAlign:"left"}}>
             <div style={{fontWeight:700,fontSize:14}}>Exportar PDF</div>
             <div style={{fontSize:11,opacity:.85,fontWeight:400,marginTop:2}}>
-              Relatório formatado com cores dos grupos, subtotais e paginação
+              Relatório formatado com cores dos grupos, status coloridos e subtotais
             </div>
           </div>
         </button>
@@ -2155,17 +2202,19 @@ function ItemPanel({item,board,allUsers,currentUser,onClose,onUpdateValue,onResp
 // FILTER PANEL — status + responsável + intervalo de datas
 // ─────────────────────────────────────────────────────────────────────────────
 function FilterPanel({board,allUsers,filters,setFilters,onClose}) {
+  // Colunas de status lidas diretamente do board — sempre atualizadas
   const statusCols=board?.columns?.filter(c=>c.tipo==="status")||[];
+  const isVendasBoard=board?.nome==="Vendas";
   const [local,setLocal]=useState(()=>({...filters}));
-  const allStatuses=useMemo(()=>{
-    const seen=new Map();
-    for(const col of statusCols){
-      for(const opt of resolveOpts(col.config?.options||[])){
-        if(!seen.has(opt.label)) seen.set(opt.label,opt);
-      }
-    }
-    return [...seen.values()];
-  },[statusCols]);
+
+  // Agrupa opções por coluna para exibição organizada
+  const statusByCol=useMemo(()=>
+    statusCols.map(col=>({
+      col,
+      opts:resolveOpts(col.config?.options||[]),
+    })).filter(({opts})=>opts.length>0)
+  ,[statusCols]);
+
   const toggleF=(key,val)=>setLocal(f=>({...f,[key]:(f[key]||[]).includes(val)?(f[key]||[]).filter(x=>x!==val):[...(f[key]||[]),val]}));
   const hasAny=Object.values(local).some(v=>Array.isArray(v)?v.length>0:!!v);
   const {isMobile}=useBreakpoint();
@@ -2173,9 +2222,11 @@ function FilterPanel({board,allUsers,filters,setFilters,onClose}) {
   const clear=()=>setLocal({});
 
   return createPortal(
-    <div style={{position:"fixed",top:0,right:0,bottom:0,width:isMobile?"100vw":"320px",
+    <div style={{position:"fixed",top:0,right:0,bottom:0,width:isMobile?"100vw":"340px",
       background:"var(--surface)",borderLeft:"1.5px solid var(--border)",zIndex:1050,
       boxShadow:"-8px 0 40px var(--shadowMd)",display:"flex",flexDirection:"column",fontFamily:"system-ui"}}>
+
+      {/* Header */}
       <div style={{padding:"17px 22px",borderBottom:"1px solid var(--border)",display:"flex",
         alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
         <span style={{fontWeight:800,fontSize:16,color:"var(--text)"}}>Filtros</span>
@@ -2185,45 +2236,63 @@ function FilterPanel({board,allUsers,filters,setFilters,onClose}) {
           <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:24,color:"var(--text3)",lineHeight:1}}>×</button>
         </div>
       </div>
-      <div style={{flex:1,overflowY:"auto",padding:"20px 22px"}}>
-        {/* Intervalo de datas */}
-        <div style={{...T.lbl,marginBottom:12}}>Intervalo de datas</div>
-        <div style={{display:"flex",gap:10,marginBottom:24}}>
-          <div style={{flex:1}}>
-            <label style={{fontSize:11,color:"var(--text3)",display:"block",marginBottom:4}}>De</label>
-            <input type="date" value={local.dateFrom||""} onChange={e=>setLocal(f=>({...f,dateFrom:e.target.value||null}))}
-              style={{...T.inp,padding:"8px 10px",fontSize:12}}/>
-          </div>
-          <div style={{flex:1}}>
-            <label style={{fontSize:11,color:"var(--text3)",display:"block",marginBottom:4}}>Até</label>
-            <input type="date" value={local.dateTo||""} onChange={e=>setLocal(f=>({...f,dateTo:e.target.value||null}))}
-              style={{...T.inp,padding:"8px 10px",fontSize:12}}/>
-          </div>
-        </div>
 
-        {/* Filtro por mês */}
-        <div style={{...T.lbl,marginBottom:12}}>Mês específico</div>
-        <input type="month" value={local.month||""} onChange={e=>setLocal(f=>({...f,month:e.target.value||null}))}
-          style={{...T.inp,marginBottom:24}}/>
+      <div style={{flex:1,overflowY:"auto",padding:"20px 22px",display:"flex",flexDirection:"column",gap:28}}>
 
-        {/* Status */}
-        {allStatuses.length>0&&<>
-          <div style={{...T.lbl,marginBottom:12}}>Status</div>
-          <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:24}}>
-            {allStatuses.map(opt=>{
-              const active=(local.status||[]).includes(opt.label);
-              return (
-                <div key={opt.id||opt.label} onClick={()=>toggleF("status",opt.label)}
-                  style={{cursor:"pointer",opacity:active?1:.45,transform:active?"scale(1.04)":"none",transition:"all .15s"}}>
-                  <Badge value={opt.label} color={opt.color}/>
+        {/* Filtros de data — ocultos no Vendas pois já existe a barra de período */}
+        {!isVendasBoard&&<div>
+          <div style={{...T.lbl,marginBottom:12}}>Intervalo de datas</div>
+          <div style={{display:"flex",gap:10,marginBottom:16}}>
+            <div style={{flex:1}}>
+              <label style={{fontSize:11,color:"var(--text3)",display:"block",marginBottom:4}}>De</label>
+              <input type="date" value={local.dateFrom||""} onChange={e=>setLocal(f=>({...f,dateFrom:e.target.value||null}))}
+                style={{...T.inp,padding:"8px 10px",fontSize:12}}/>
+            </div>
+            <div style={{flex:1}}>
+              <label style={{fontSize:11,color:"var(--text3)",display:"block",marginBottom:4}}>Até</label>
+              <input type="date" value={local.dateTo||""} onChange={e=>setLocal(f=>({...f,dateTo:e.target.value||null}))}
+                style={{...T.inp,padding:"8px 10px",fontSize:12}}/>
+            </div>
+          </div>
+          <div style={{...T.lbl,marginBottom:8}}>Mês específico</div>
+          <input type="month" value={local.month||""} onChange={e=>setLocal(f=>({...f,month:e.target.value||null}))}
+            style={{...T.inp}}/>
+        </div>}
+
+        {/* Status — agrupado por coluna, sempre refletindo o estado atual do board */}
+        {statusByCol.length>0&&<div>
+          <div style={{...T.lbl,marginBottom:14}}>Status</div>
+          <div style={{display:"flex",flexDirection:"column",gap:18}}>
+            {statusByCol.map(({col,opts})=>(
+              <div key={col.id}>
+                {/* Nome da coluna como separador visual */}
+                <div style={{fontSize:11,fontWeight:700,color:"var(--text3)",textTransform:"uppercase",
+                  letterSpacing:"0.07em",marginBottom:8,paddingBottom:5,
+                  borderBottom:"1px solid var(--border)"}}>
+                  {col.nome}
                 </div>
-              );
-            })}
+                <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                  {opts.map(opt=>{
+                    const active=(local.status||[]).includes(opt.label);
+                    return (
+                      <div key={opt.id||opt.label} onClick={()=>toggleF("status",opt.label)}
+                        style={{cursor:"pointer",transition:"all .15s",
+                          opacity:active?1:.5,
+                          transform:active?"scale(1.06)":"none",
+                          outline:active?"2px solid var(--blue)":"2px solid transparent",
+                          outlineOffset:2,borderRadius:20}}>
+                        <Badge value={opt.label} color={opt.color}/>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
-        </>}
+        </div>}
 
         {/* Responsável */}
-        {allUsers.length>0&&<>
+        {allUsers.length>0&&<div>
           <div style={{...T.lbl,marginBottom:12}}>Responsável</div>
           <div style={{display:"flex",flexDirection:"column",gap:7}}>
             {allUsers.map(u=>{
@@ -2231,20 +2300,23 @@ function FilterPanel({board,allUsers,filters,setFilters,onClose}) {
               return (
                 <div key={u.id} onClick={()=>toggleF("resp",u.id)}
                   style={{display:"flex",alignItems:"center",gap:11,padding:"10px 14px",borderRadius:9,cursor:"pointer",
-                    border:`1.5px solid ${active?"var(--blue)":"var(--border)"}`,background:active?"var(--surface3)":"var(--surface2)",transition:"all .15s"}}>
+                    border:`1.5px solid ${active?"var(--blue)":"var(--border)"}`,
+                    background:active?"var(--surface3)":"var(--surface2)",transition:"all .15s"}}>
                   <Avatar user={u} size={32}/>
-                  <div>
+                  <div style={{flex:1}}>
                     <div style={{fontSize:13,fontWeight:active?700:400,color:"var(--text)"}}>{u.nome}</div>
                     <div style={{fontSize:11,color:"var(--text3)"}}>{u.funcao||""}</div>
                   </div>
-                  {active&&<span style={{marginLeft:"auto",color:"var(--blue)",fontWeight:700}}>✓</span>}
+                  {active&&<span style={{color:"var(--blue)",fontWeight:700,fontSize:15}}>✓</span>}
                 </div>
               );
             })}
           </div>
-        </>}
+        </div>}
+
       </div>
-      {/* Botão Aplicar Filtros */}
+
+      {/* Footer */}
       <div style={{padding:"14px 22px",borderTop:"1px solid var(--border)",display:"flex",gap:10,flexShrink:0}}>
         <button onClick={apply}
           style={{...T.btn,flex:1,background:"var(--blue)",color:"#fff",padding:"11px 0",fontSize:14,fontWeight:700,justifyContent:"center"}}>
@@ -3250,7 +3322,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
 
     return [...enriched,...legacyFiltered.map(g=>({...g,items:applyFilters(g.items||[])}))];
   },[board,perms,currentUser,groupAccess,isNegociacoes,isVendas,filters,search,sortCfg,vendasFilter]);
-  const filterCount=(filters.status?.length||0)+(filters.resp?.length||0)+(filters.dateFrom?1:0)+(filters.dateTo?1:0)+(filters.month?1:0)+(search.trim()?1:0);
+  const filterCount=(filters.status?.length||0)+(filters.resp?.length||0)+(!isVendas&&filters.dateFrom?1:0)+(!isVendas&&filters.dateTo?1:0)+(!isVendas&&filters.month?1:0)+(search.trim()?1:0);
 
   if(loading) return <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}><Spinner size={40}/><span style={{color:"var(--text3)",fontSize:14}}>Carregando…</span></div>;
   if(!board) return (
@@ -3419,7 +3491,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
       )}
       {showFilters&&<FilterPanel board={board} allUsers={allUsers} filters={filters} setFilters={setFilters} onClose={()=>setShowFilters(false)}/>}
       {showColMgr&&<ColumnManagerModal board={board} toast={toast} onClose={()=>setShowColMgr(false)} onRefresh={()=>loadBoard(boardId)}/>}
-      {showExport&&<ExportModal board={{...board,groups:board.groups.map(g=>({...g,items:applyFilters(g.items)}))}} onClose={()=>setShowExport(false)}/>}
+      {showExport&&<ExportModal board={{...board,groups:visibleGroups}} onClose={()=>setShowExport(false)}/>}
       {parentGroupM!==null&&(
         <ParentGroupModal
           initial={parentGroupM?.id?parentGroupM:null}
