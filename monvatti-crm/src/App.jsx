@@ -2524,12 +2524,19 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     const ids=(itens||[]).map(i=>i.id);
     let vMap={},rMap={};
     if(ids.length){
-      const [{data:vals},{data:resps}]=await Promise.all([
-        db.from("item_values").select("*").in("item_id",ids),
-        db.from("item_responsables").select("*").in("item_id",ids),
+      // Busca em chunks de 100 IDs para evitar o corte silencioso do Supabase (default 1000 linhas).
+      // limit(50000) garante que nenhum chunk seja truncado independentemente do crescimento do CRM.
+      const CHUNK=100;
+      const chunks=[];
+      for(let i=0;i<ids.length;i+=CHUNK) chunks.push(ids.slice(i,i+CHUNK));
+      const [valsArr,respsArr]=await Promise.all([
+        Promise.all(chunks.map(chunk=>db.from("item_values").select("*").in("item_id",chunk).limit(1000000))),
+        Promise.all(chunks.map(chunk=>db.from("item_responsables").select("*").in("item_id",chunk).limit(1000000))),
       ]);
-      for(const v of vals||[]){if(!vMap[v.item_id])vMap[v.item_id]={};vMap[v.item_id][v.column_id]=v.value;}
-      for(const r of resps||[]){if(!rMap[r.item_id])rMap[r.item_id]=[];rMap[r.item_id].push(r.user_id);}
+      const vals=valsArr.flatMap(r=>r.data||[]);
+      const resps=respsArr.flatMap(r=>r.data||[]);
+      for(const v of vals){if(!vMap[v.item_id])vMap[v.item_id]={};vMap[v.item_id][v.column_id]=v.value;}
+      for(const r of resps){if(!rMap[r.item_id])rMap[r.item_id]=[];rMap[r.item_id].push(r.user_id);}
     }
     // Carrega group_access para todos os grupos do board
     const gids=(grps||[]).map(g=>g.id);
