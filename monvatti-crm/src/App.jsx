@@ -36,7 +36,7 @@ const sendEmailJS = async (params) => {
 const WA_DESTINATARIOS = [
   { nome: "Yuri",     phone: "554899706309", apikey: "6328106"          },
   { nome: "Mauricio", phone: "554898652493", apikey: "3460088"          },
-  { nome: "Alice",    phone: "",             apikey: ""                 }, // ← preencher
+  { nome: "Isaías",    phone: "554896321559",             apikey: "1681947"                 }, // ← preencher
 ];
 const sendWhatsApp = async (text) => {
   const ativos = WA_DESTINATARIOS.filter(d => d.phone && d.apikey);
@@ -841,12 +841,14 @@ function CalcCell({values,allColumns}) {
 }
 
 function Cell({col,values,allColumns,responsibles,allUsers,onChange,onRespChange}) {
+  // responsibles é {col_id: user_ids[]} — extrai apenas os IDs desta coluna
+  const colResponsibles = col.tipo==="user" ? (responsibles?.[col.id]||[]) : [];
   const v=values?.[col.id];
   const opts=col.config?.options||[];
   switch(col.tipo){
     case "calculated": return <CalcCell values={values} allColumns={allColumns}/>;
     case "status":     return <StatusCell value={v} options={opts} onChange={onChange}/>;
-    case "user":       return <UserCell value={responsibles} allUsers={allUsers} onChange={onRespChange}/>;
+    case "user":       return <UserCell value={colResponsibles} allUsers={allUsers} onChange={ids=>onRespChange(col.id,ids)}/>;
     case "currency":   return <CurrencyCell value={v} onChange={onChange}/>;
     case "link":       return <LinkCell value={v} onChange={onChange}/>;
     case "date":       return <EditableCell value={v} onChange={onChange} type="date"/>;
@@ -1373,10 +1375,12 @@ function ExportModal({board,allUsers=[],onClose}) {
           ...g,
           items:(g.items||[]).map(item=>({
             ...item,
-            _respNames:(item.responsibles||[])
-              .map(id=>allUsers.find(u=>u.id===id)?.nome||"")
-              .filter(Boolean)
-              .join(", "),
+            _respNames:Object.entries(item.responsibles||{})
+              .map(([colId,uids])=>{
+                const colName=board.columns.find(c=>c.id===colId)?.nome||"";
+                const names=uids.map(id=>allUsers.find(u=>u.id===id)?.nome||"").filter(Boolean).join(", ");
+                return names?colName+": "+names:"";
+              }).filter(Boolean).join(" | "),
           })),
         })),
       };
@@ -1448,7 +1452,7 @@ function ExportModal({board,allUsers=[],onClose}) {
       const lastCi=pdfCols.length-1;
       const isObsCol=(col,ci)=>ci===lastCi||col.nome.toLowerCase()==="obs";
       // Helper: resolve nomes dos responsáveis de um item
-      const getRespNames=item=>(item.responsibles||[]).map(id=>allUsers.find(u=>u.id===id)?.nome||"").filter(Boolean).join(", ")||"—";
+      const getRespNames=item=>{const parts=Object.entries(item.responsibles||{}).map(([colId,uids])=>{const colName=board.columns.find(c=>c.id===colId)?.nome||"";const names=uids.map(id=>allUsers.find(u=>u.id===id)?.nome||"").filter(Boolean).join(", ");return names?colName+": "+names:"";}).filter(Boolean);return parts.join(" | ")||"—";};
       const body=[];
       flatGroups.forEach(g=>{
         const [r,gn,b2]=hexRGB(g.color||"#4F46E5");
@@ -1458,7 +1462,7 @@ function ExportModal({board,allUsers=[],onClose}) {
         const subtotals=pdfCols.map(()=>0);
         (g.items||[]).forEach((item,idx)=>{
           const rowBg=idx%2===0?[255,255,255]:[241,245,249];
-          body.push(pdfCols.map((col,ci)=>{
+          const dataRow=pdfCols.map((col,ci)=>{
             const raw=pdfGetVal(item,col);
             const isMoney=col.tipo==="currency"||col.tipo==="calculated";
             const isNum=isMoney||col.tipo==="number";
@@ -1472,9 +1476,9 @@ function ExportModal({board,allUsers=[],onClose}) {
               }
             }
             return{content:display||"—",styles:{halign:isNum?"right":isObsCol(col,ci)?"left":"center",fontSize:7.5,fillColor:rowBg,textColor:[30,41,59],cellPadding:{top:3,bottom:3,left:4,right:4}}};
-          }));
-          // Responsável
-          row.push({content:getRespNames(item),styles:{halign:"left",fontSize:7,fillColor:rowBg,textColor:[30,41,59],cellPadding:{top:3,bottom:3,left:4,right:4}}});
+          });
+          dataRow.push({content:getRespNames(item),styles:{halign:"left",fontSize:7,fillColor:rowBg,textColor:[30,41,59],cellPadding:{top:3,bottom:3,left:4,right:4}}});
+          body.push(dataRow);
         });
         if(pdfCols.some(c=>c.tipo==="currency"||c.tipo==="calculated")){
           body.push([...pdfCols.map((col,ci)=>{
@@ -2000,7 +2004,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                         onDragOver={e=>onItemDragOver(e,item.id,group.id)}
                         onDrop={e=>onItemDrop(e,item.id,group.id)}
                         onUpdateValue={(cid,v)=>onUpdateValue(item.id,cid,v)}
-                        onRespChange={ids=>onRespChange(item.id,ids)}
+                        onRespChange={(colId,ids)=>onRespChange(item.id,colId,ids)}
                         sentToNegIds={sentToNegIds}
                         stickyFirstCols={stickyFirstCols}
                         colWidths={colWidths}
@@ -2112,7 +2116,7 @@ function ItemPanel({item,board,allUsers,currentUser,onClose,onUpdateValue,onResp
                 <div style={{flex:1,minWidth:0}}>
                   <Cell col={col} values={item.values} allColumns={board.columns}
                     responsibles={item.responsibles} allUsers={allUsers}
-                    onChange={v=>onUpdateValue(col.id,v)} onRespChange={onRespChange}/>
+                    onChange={v=>onUpdateValue(col.id,v)} onRespChange={(colId,ids)=>onRespChange(colId,ids)}/>
                 </div>
               </div>
             ))}
@@ -2337,7 +2341,7 @@ function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedIt
               onToggle={()=>toggleSg(sg.id)}
               onOpenItem={item=>onOpenItem(item,sg.id)}
               onUpdateValue={(iid,cid,v)=>onUpdateValue(iid,sg.id,cid,v)}
-              onRespChange={(iid,ids)=>onRespChange(iid,sg.id,ids)}
+              onRespChange={(iid,colId,ids)=>onRespChange(iid,sg.id,colId,ids)}
               onDelItem={iid=>onDelItem(sg.id,iid)}
               onMoveInativa={onMoveInativa?item=>onMoveInativa(sg.id,item):null}
               onDupNeg={onDupNeg?item=>onDupNeg(sg.id,item):null}
@@ -2534,7 +2538,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
       const vals=valsArr.flatMap(r=>r.data||[]);
       const resps=respsArr.flatMap(r=>r.data||[]);
       for(const v of vals){if(!vMap[v.item_id])vMap[v.item_id]={};vMap[v.item_id][v.column_id]=v.value;}
-      for(const r of resps){if(!rMap[r.item_id])rMap[r.item_id]=[];rMap[r.item_id].push(r.user_id);}
+      for(const r of resps){const rk=r.item_id+"__"+r.column_id;if(!rMap[rk])rMap[rk]=[];rMap[rk].push(r.user_id);}
     }
     // Carrega group_access para todos os grupos do board
     const gids=(grps||[]).map(g=>g.id);
@@ -2550,7 +2554,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     const columns=(cols||[]).map(c=>({...c,config:typeof c.config==="string"?JSON.parse(c.config):(c.config||{})}));
     const groups=(grps||[]).map(g=>({
       ...g,
-      items:(itens||[]).filter(i=>i.group_id===g.id).map(i=>({...i,values:vMap[i.id]||{},responsibles:rMap[i.id]||[],updates:[]}))
+      items:(itens||[]).filter(i=>i.group_id===g.id).map(i=>{const rbc={};for(const col of columns.filter(c=>c.tipo==="user")){rbc[col.id]=rMap[i.id+"__"+col.id]||[];}return{...i,values:vMap[i.id]||{},responsibles:rbc,updates:[]};}).filter(Boolean)
     }));
     setBoard({...bData,columns,groups});
 
@@ -2578,13 +2582,13 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
   const addItem=async gid=>{
     const {data,error}=await db.from("items").insert({board_id:boardId,group_id:gid,ordem:9999}).select().single();
     if(error){toast("Erro ao criar item","error");return;}
-    // Auto-preenche responsável com o owner do grupo
+    const firstUserCol=board.columns.find(c=>c.tipo==="user");
     const group=board?.groups.find(g=>g.id===gid);
     const ownerIds=group?.owner_id?[group.owner_id]:[];
-    if(ownerIds.length){
-      await db.from("item_responsables").insert(ownerIds.map(uid=>({item_id:data.id,user_id:uid})));
+    if(ownerIds.length&&firstUserCol){
+      await db.from("item_responsables").insert(ownerIds.map(uid=>({item_id:data.id,user_id:uid,column_id:firstUserCol.id})));
     }
-    upd(b=>{b.groups.find(g=>g.id===gid)?.items.push({...data,values:{},responsibles:ownerIds,updates:[]});});
+    upd(b=>{b.groups.find(g=>g.id===gid)?.items.push({...data,values:{},responsibles:firstUserCol?{[firstUserCol.id]:ownerIds}:{},updates:[]});});
     bump(boardId,1);
   };
 
@@ -2594,11 +2598,11 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     await db.from("item_values").upsert({item_id:iid,column_id:cid,value:val},{onConflict:"item_id,column_id"});
   };
 
-  const updateResp=async(iid,gid,ids)=>{
-    upd(b=>{const item=b.groups.find(g=>g.id===gid)?.items.find(i=>i.id===iid);if(item)item.responsibles=ids;});
-    if(selItem?.id===iid)setSelItem(p=>({...p,responsibles:ids}));
-    await db.from("item_responsables").delete().eq("item_id",iid);
-    if(ids.length)await db.from("item_responsables").insert(ids.map(uid=>({item_id:iid,user_id:uid})));
+  const updateResp=async(iid,gid,colId,ids)=>{
+    upd(b=>{const item=b.groups.find(g=>g.id===gid)?.items.find(i=>i.id===iid);if(item)item.responsibles={...(item.responsibles||{}),[colId]:ids};});
+    if(selItem?.id===iid)setSelItem(p=>({...p,responsibles:{...(p.responsibles||{}),[colId]:ids}}));
+    await db.from("item_responsables").delete().eq("item_id",iid).eq("column_id",colId);
+    if(ids.length)await db.from("item_responsables").insert(ids.map(uid=>({item_id:iid,user_id:uid,column_id:colId})));
   };
 
   const delItem=async(gid,iid)=>{
@@ -2627,7 +2631,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
   const itemIsComplete=(item)=>{
     return board.columns.every(col=>{
       if(col.tipo==="calculated") return true; // calculado não precisa
-      if(col.tipo==="user") return (item.responsibles||[]).length>0;
+      if(col.tipo==="user"){const rb=item.responsibles||{};return Object.values(rb).some(arr=>arr.length>0);}
       const v=item.values?.[col.id];
       return v!=null&&v!=="";
     });
@@ -2811,6 +2815,19 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     if(toInsert.length) await db.from("item_values").insert(toInsert);
   };
 
+  const copyResponsibles=async(srcItem,srcCols,tgtItemId,tgtCols)=>{
+    // Mapeia pelo NOME da coluna user: Closer→Closer, SDR→SDR no destino
+    const tgtUserByName=Object.fromEntries(tgtCols.filter(c=>c.tipo==="user").map(c=>[c.nome.toLowerCase().trim(),c.id]));
+    const rows=[];
+    for(const [srcColId,uids] of Object.entries(srcItem.responsibles||{})){
+      const srcCol=srcCols.find(c=>c.id===srcColId);
+      if(!srcCol) continue;
+      const tgtColId=tgtUserByName[srcCol.nome.toLowerCase().trim()];
+      if(tgtColId) for(const uid of uids) rows.push({item_id:tgtItemId,user_id:uid,column_id:tgtColId});
+    }
+    if(rows.length) await db.from("item_responsables").insert(rows);
+  };
+
   const copyUpdates=async(srcItemId,tgtItemId)=>{
     const {data:upds}=await db.from("item_updates").select("*").eq("item_id",srcItemId).order("created_at");
     if(!upds?.length) return;
@@ -2831,7 +2848,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",iBoard.id);
     await copyMatchingValues(item.id,board.columns,newItem.id,tgtCols||[]);
     // Copia responsáveis
-    if(item.responsibles?.length) await db.from("item_responsables").insert(item.responsibles.map(uid=>({item_id:newItem.id,user_id:uid})));
+    await copyResponsibles(item,board.columns,newItem.id,tgtCols||[]);
     // Copia atualizações
     await copyUpdates(item.id,newItem.id);
     // Exclui original
@@ -2856,7 +2873,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
         const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",nBoard.id);
         await copyMatchingValues(item.id,board.columns,ni.id,tgtCols||[]);
         // Responsáveis
-        if(item.responsibles?.length) await db.from("item_responsables").insert(item.responsibles.map(uid=>({item_id:ni.id,user_id:uid})));
+        await copyResponsibles(item,board.columns,ni.id,tgtCols||[]);
         // Atualizações
         await copyUpdates(item.id,ni.id);
         bump(nBoard.id,1);
@@ -2883,7 +2900,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
         if(!ni){toast("Erro ao criar item","error");return;}
         const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",negBoard.id);
         await copyMatchingValues(item.id,board.columns,ni.id,tgtCols||[]);
-        if(item.responsibles?.length) await db.from("item_responsables").insert(item.responsibles.map(uid=>({item_id:ni.id,user_id:uid})));
+        await copyResponsibles(item,board.columns,ni.id,tgtCols||[]);
         await copyUpdates(item.id,ni.id);
         bump(negBoard.id,1);
         await logAct(currentUser?.id,wsId,"item",ni.id,"created",{via:"sendToNeg",from:item.id});
@@ -2919,7 +2936,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
         if(!ni){toast("Erro ao criar item em Vendas","error");setGroupSelM(null);return;}
         const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",vendasBoard.id);
         await copyMatchingValues(item.id,board.columns,ni.id,tgtCols||[]);
-        if(item.responsibles?.length) await db.from("item_responsables").insert(item.responsibles.map(uid=>({item_id:ni.id,user_id:uid})));
+        await copyResponsibles(item,board.columns,ni.id,tgtCols||[]);
         await copyUpdates(item.id,ni.id);
         bump(vendasBoard.id,1);
         toast("🏆 Lead enviado para Vendas!");
@@ -2938,7 +2955,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
         .filter(c=>c.tipo!=="calculated")
         .map(c=>{
           const v=c.tipo==="user"
-            ? (item.responsibles||[]).map(id=>allUsers.find(u=>u.id===id)?.nome||id).join(", ")
+            ? ((item.responsibles||{})[c.id]||[]).map(id=>allUsers.find(u=>u.id===id)?.nome||id).join(", ")
             : item.values?.[c.id];
           return v?`${c.nome}: ${v}`:null;
         })
@@ -3129,8 +3146,10 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     return [...items].sort((a,b)=>{
       // Ordenação por responsável
       if(colId==="__resp__"){
-        const nameA=(allUsers.find(u=>a.responsibles?.[0]===u.id)?.nome||"").toLowerCase();
-        const nameB=(allUsers.find(u=>b.responsibles?.[0]===u.id)?.nome||"").toLowerCase();
+        const firstRespA=Object.values(a.responsibles||{})[0]?.[0];
+        const firstRespB=Object.values(b.responsibles||{})[0]?.[0];
+        const nameA=(allUsers.find(u=>firstRespA===u.id)?.nome||"").toLowerCase();
+        const nameB=(allUsers.find(u=>firstRespB===u.id)?.nome||"").toLowerCase();
         return dir*(nameA<nameB?-1:nameA>nameB?1:0);
       }
       const vA=a.values?.[colId]; const vB=b.values?.[colId];
@@ -3150,14 +3169,14 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     let r=items;
     if(search.trim()){
       const q=search.toLowerCase();
-      r=r.filter(i=>Object.values(i.values||{}).some(v=>v&&String(v).toLowerCase().includes(q))||allUsers.filter(u=>i.responsibles?.includes(u.id)).some(u=>u.nome.toLowerCase().includes(q)));
+      r=r.filter(i=>Object.values(i.values||{}).some(v=>v&&String(v).toLowerCase().includes(q))||allUsers.filter(u=>Object.values(i.responsibles||{}).some(arr=>arr.includes(u.id))).some(u=>u.nome.toLowerCase().includes(q)));
     }
     if(filters.status?.length){
       const sCols=board?.columns?.filter(c=>c.tipo==="status")||[];
       // Compara com o label armazenado (string) — compatível com formato antigo e novo
       r=r.filter(i=>filters.status.some(label=>sCols.some(c=>i.values?.[c.id]===label)));
     }
-    if(filters.resp?.length) r=r.filter(i=>filters.resp.some(uid=>i.responsibles?.includes(uid)));
+    if(filters.resp?.length) r=r.filter(i=>filters.resp.some(uid=>Object.values(i.responsibles||{}).some(arr=>arr.includes(uid))));
     // Filtro por intervalo de datas
     if(filters.dateFrom||filters.dateTo||filters.month){
       const dateCols=board?.columns?.filter(c=>c.tipo==="date")||[];
@@ -3345,7 +3364,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
                 onDelItem={(gid,iid)=>setConfirmM({title:"Excluir item",danger:true,message:"Excluir permanentemente?",onConfirm:()=>{delItem(gid,iid);setConfirmM(null);}})}
                 onOpenItem={(item,gid)=>loadUpdates(item,gid)}
                 onUpdateValue={(iid,gid,cid,v)=>updateValue(iid,gid,cid,v)}
-                onRespChange={(iid,gid,ids)=>updateResp(iid,gid,ids)}
+                onRespChange={(iid,gid,colId,ids)=>updateResp(iid,gid,colId,ids)}
                 onMoveInativa={canActions?(gid,item)=>moveInativa(gid,item):null}
                 onDupNeg={null}
                 onSendToNeg={isPreVendas?(gid,item)=>sendToNeg(gid,item):null}
@@ -3372,7 +3391,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
                 onRenameGroup={n=>renameGroup(group.id,n)} onToggle={()=>toggleGroup(group.id)}
                 onOpenItem={item=>loadUpdates(item,group.id)}
                 onUpdateValue={(iid,cid,v)=>updateValue(iid,group.id,cid,v)}
-                onRespChange={(iid,ids)=>updateResp(iid,group.id,ids)}
+                onRespChange={(iid,colId,ids)=>updateResp(iid,group.id,colId,ids)}
                 onDelItem={iid=>setConfirmM({title:"Excluir item",danger:true,message:"Excluir permanentemente?",onConfirm:()=>{delItem(group.id,iid);setConfirmM(null);}})}
                 onMoveInativa={canActions?item=>moveInativa(group.id,item):null}
                 onDupNeg={null}
@@ -3410,7 +3429,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
         <ItemPanel item={selItem} board={board} allUsers={allUsers} currentUser={currentUser}
           onClose={()=>setSelItem(null)}
           onUpdateValue={(cid,v)=>updateValue(selItem.id,selItem._gid,cid,v)}
-          onRespChange={ids=>updateResp(selItem.id,selItem._gid,ids)}
+          onRespChange={(colId,ids)=>updateResp(selItem.id,selItem._gid,colId,ids)}
           onAddUpdate={html=>addUpdate(selItem.id,selItem._gid,html)}
           onDelUpdate={uid=>delUpdate(uid)}
         />
@@ -3893,8 +3912,7 @@ function MoveItemsModal({items,srcBoard,allBoards,onMove,onCancel}) {
         if(tgtId) toInsert.push({item_id:ni.id,column_id:tgtId,value:v.value});
       }
       if(toInsert.length) await db.from("item_values").insert(toInsert);
-      if(item.responsibles?.length)
-        await db.from("item_responsables").insert(item.responsibles.map(uid=>({item_id:ni.id,user_id:uid})));
+      await copyResponsibles(item,board.columns,ni.id,tgtCols||[]);
       const {data:upds}=await db.from("item_updates").select("*").eq("item_id",item.id);
       if(upds?.length)
         await db.from("item_updates").insert(upds.map(u=>({item_id:ni.id,content:u.content,created_by:u.created_by})));
