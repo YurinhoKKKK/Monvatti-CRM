@@ -841,14 +841,12 @@ function CalcCell({values,allColumns}) {
 }
 
 function Cell({col,values,allColumns,responsibles,allUsers,onChange,onRespChange}) {
-  // responsibles é {col_id: user_ids[]} — extrai apenas os IDs desta coluna
-  const colResponsibles = col.tipo==="user" ? (responsibles?.[col.id]||[]) : [];
   const v=values?.[col.id];
   const opts=col.config?.options||[];
   switch(col.tipo){
     case "calculated": return <CalcCell values={values} allColumns={allColumns}/>;
     case "status":     return <StatusCell value={v} options={opts} onChange={onChange}/>;
-    case "user":       return <UserCell value={colResponsibles} allUsers={allUsers} onChange={ids=>onRespChange(col.id,ids)}/>;
+    case "user":       return <UserCell value={responsibles} allUsers={allUsers} onChange={onRespChange}/>;
     case "currency":   return <CurrencyCell value={v} onChange={onChange}/>;
     case "link":       return <LinkCell value={v} onChange={onChange}/>;
     case "date":       return <EditableCell value={v} onChange={onChange} type="date"/>;
@@ -1301,7 +1299,7 @@ function ColumnManagerModal({board,onClose,onRefresh,toast}) {
 // ─────────────────────────────────────────────────────────────────────────────
 // EXPORT MODAL — XLSX + PDF com cores da marca
 // ─────────────────────────────────────────────────────────────────────────────
-function ExportModal({board,allUsers=[],onClose}) {
+function ExportModal({board,onClose}) {
   const [busy,setBusy]=useState(false);
   const [selCols,setSelCols]=useState(()=>new Set(board.columns.filter(c=>c.tipo!=="user").map(c=>c.id)));
   const toast=useToast();
@@ -1350,171 +1348,243 @@ function ExportModal({board,allUsers=[],onClose}) {
     return String(v);
   };
 
-  const exportXLSX=async()=>{
+  const exportXLSX=()=>{
     setBusy(true);
     try{
-      const date=new Date().toLocaleDateString("pt-BR").replace(/\//g,"-");
-      const dateStr=new Date().toLocaleString("pt-BR");
-
-      // Monta mapa de cores dos status para cada coluna (enviado à Edge Function)
-      const colsWithColors=visibleCols.map(col=>{
-        if(col.tipo!=="status") return col;
-        const colorMap={};
-        resolveOpts(col.config?.options||[]).forEach(opt=>{
-          if(opt.label&&opt.color) colorMap[opt.label]=opt.color;
-        });
-        return {...col,_statusColors:colorMap};
-      });
-
-      const payload={
-        boardNome:board.nome,
-        boardIcon:board.icon||"",
-        dateStr,
-        visibleCols:colsWithColors,
-        flatGroups:flatGroups.map(g=>({
-          ...g,
-          items:(g.items||[]).map(item=>({
-            ...item,
-            _respNames:Object.entries(item.responsibles||{})
-              .map(([colId,uids])=>{
-                const colName=board.columns.find(c=>c.id===colId)?.nome||"";
-                const names=uids.map(id=>allUsers.find(u=>u.id===id)?.nome||"").filter(Boolean).join(", ");
-                return names?colName+": "+names:"";
-              }).filter(Boolean).join(" | "),
-          })),
-        })),
+      const wb=XLSX.utils.book_new();
+      const HEADER_BG="1E293B";
+      const HEADER_FG="FFFFFF";
+      const TOTAL_BG ="0F4C35";
+      const TOTAL_FG ="FFFFFF";
+      const GROUP_FG ="FFFFFF";
+      const ALT_BG   ="F1F5F9";
+      const BORDER   ="CBD5E1";
+      const TEXT_MAIN="1E293B";
+      const TEXT_MUTED="64748B";
+      const fmtCur=v=>v!=null&&v!==""?fmtBRL(parseFloat(v)||0):"";
+      const fmtNum=v=>v!=null&&v!==""?String(parseFloat(v)||0):"";
+      const hexToARGB=h=>("FF"+(h||"4F46E5").replace("#","").toUpperCase().padStart(6,"0"));
+      // Clareia hex para fundo suave de badge (18% cor + 82% branco)
+      const hexToLightBg=h=>{
+        const r=parseInt((h||"#94a3b8").slice(1,3),16)||148;
+        const g=parseInt((h||"#94a3b8").slice(3,5),16)||163;
+        const b=parseInt((h||"#94a3b8").slice(5,7),16)||184;
+        return [Math.round(r*0.18+255*0.82),Math.round(g*0.18+255*0.82),Math.round(b*0.18+255*0.82)]
+          .map(x=>x.toString(16).padStart(2,"0").toUpperCase()).join("");
       };
+      const cellStyle=(opts={})=>({
+        font:{name:"Calibri",sz:opts.sz||10,...(opts.bold?{bold:true}:{}),...(opts.italic?{italic:true}:{}),...(opts.color?{color:{rgb:opts.color}}:{})},
+        fill:opts.fill?{fgColor:{rgb:opts.fill},patternType:"solid"}:{patternType:"none"},
+        alignment:{vertical:"center",horizontal:opts.align||"left",wrapText:opts.wrap||false},
+        border:{top:{style:"thin",color:{rgb:BORDER}},bottom:{style:"thin",color:{rgb:BORDER}},
+                left:{style:"thin",color:{rgb:BORDER}},right:{style:"thin",color:{rgb:BORDER}}},
+      });
+      const moneyCols=visibleCols.filter(c=>c.tipo==="currency"||c.tipo==="calculated");
 
-      const {data:{session}}=await db.auth.getSession();
-      const resp=await fetch(
-        "https://hyhealogmqylciuzdmkz.supabase.co/functions/v1/export-xlsx",
-        {method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+session.access_token},
-         body:JSON.stringify(payload)}
-      );
-      if(!resp.ok){const err=await resp.json();throw new Error(err.error||"Erro na Edge Function");}
-      const blob=await resp.blob();
-      const url=URL.createObjectURL(blob);
-      const a=document.createElement("a");
-      a.href=url;
-      a.download=board.nome.replace(/\s+/g,"_")+"_"+date+".xlsx";
-      a.click();
-      URL.revokeObjectURL(url);
+      // ── Aba 1: Resumo ──────────────────────────────────────────────────────
+      const summaryRows=[];
+      summaryRows.push([{v:"MONVATTI CRM — "+board.nome,s:cellStyle({bold:true,sz:15,color:HEADER_FG,fill:HEADER_BG,align:"center"})}]);
+      summaryRows.push([{v:"Exportado em: "+dateStr,s:cellStyle({sz:9,color:TEXT_MUTED,align:"center"})}]);
+      summaryRows.push([{v:""}]);
+      summaryRows.push([
+        {v:"Grupo",s:cellStyle({bold:true,sz:11,color:HEADER_FG,fill:HEADER_BG})},
+        {v:"Leads",s:cellStyle({bold:true,sz:11,color:HEADER_FG,fill:HEADER_BG,align:"center"})},
+        ...moneyCols.map(c=>({v:"Total "+c.nome,s:cellStyle({bold:true,sz:11,color:HEADER_FG,fill:HEADER_BG,align:"right"})}))
+      ]);
+      const grandTotal=moneyCols.map(()=>0);
+      flatGroups.forEach(g=>{
+        const itens=g.items||[];
+        const sums=moneyCols.map((c,i)=>{const v=itens.reduce((s,it)=>s+(parseFloat(getCellVal(it,c))||0),0);grandTotal[i]+=v;return v;});
+        const gc=hexToARGB(g.color||"#4F46E5");
+        const parentLabel=g._parentNome?" ("+g._parentNome+")":"";
+        summaryRows.push([
+          {v:g.nome+parentLabel,s:cellStyle({bold:true,sz:10,color:GROUP_FG,fill:gc.slice(2)})},
+          {v:itens.length,s:cellStyle({align:"center",sz:10,fill:gc.slice(2),color:GROUP_FG})},
+          ...sums.map(s=>({v:fmtBRL(s),s:cellStyle({align:"right",sz:10,fill:gc.slice(2),color:GROUP_FG})}))
+        ]);
+      });
+      summaryRows.push([
+        {v:"TOTAL GERAL",s:cellStyle({bold:true,sz:11,color:TOTAL_FG,fill:TOTAL_BG})},
+        {v:flatGroups.reduce((s,g)=>s+(g.items||[]).length,0),s:cellStyle({bold:true,align:"center",sz:11,color:TOTAL_FG,fill:TOTAL_BG})},
+        ...grandTotal.map(v=>({v:fmtBRL(v),s:cellStyle({bold:true,align:"right",sz:11,color:TOTAL_FG,fill:TOTAL_BG})}))
+      ]);
+      const wsSummary=XLSX.utils.aoa_to_sheet(summaryRows.map(r=>r.map(c=>typeof c==="object"&&"v" in c?c.v:c)));
+      summaryRows.forEach((row,ri)=>{row.forEach((cell,ci)=>{if(cell?.s){const ref=XLSX.utils.encode_cell({r:ri,c:ci});if(!wsSummary[ref])wsSummary[ref]={};wsSummary[ref].s=cell.s;}});});
+      const sumWidth=2+moneyCols.length;
+      wsSummary["!merges"]=[{s:{r:0,c:0},e:{r:0,c:sumWidth-1}},{s:{r:1,c:0},e:{r:1,c:sumWidth-1}}];
+      wsSummary["!cols"]=[{wch:32},{wch:10},...moneyCols.map(()=>({wch:20}))];
+      wsSummary["!rows"]=[{hpt:32},{hpt:18},{hpt:8},{hpt:22},...flatGroups.map(()=>({hpt:22})),{hpt:24}];
+      XLSX.utils.book_append_sheet(wb,wsSummary,"Resumo");
+
+      // ── Aba 2: Dados detalhados ─────────────────────────────────────────────
+      const detailRows=[];
+      detailRows.push([{v:"MONVATTI CRM — "+board.nome,s:cellStyle({bold:true,sz:14,color:HEADER_FG,fill:HEADER_BG,align:"center"})}]);
+      detailRows.push([{v:"Exportado em: "+dateStr,s:cellStyle({sz:9,color:TEXT_MUTED,align:"center"})}]);
+      detailRows.push([{v:""}]);
+      detailRows.push([
+        {v:"Grupo",s:cellStyle({bold:true,sz:11,color:HEADER_FG,fill:HEADER_BG})},
+        ...visibleCols.map(c=>({v:c.nome,s:cellStyle({bold:true,sz:11,color:HEADER_FG,fill:HEADER_BG,align:c.tipo==="currency"||c.tipo==="number"||c.tipo==="calculated"?"right":"left"})}))
+      ]);
+      flatGroups.forEach(g=>{
+        const gc=hexToARGB(g.color||"#4F46E5");
+        const parentLabel=g._parentNome?" — "+g._parentNome:"";
+        detailRows.push([
+          {v:g.nome+parentLabel+" ("+((g.items||[]).length)+" leads)",s:cellStyle({bold:true,sz:11,color:GROUP_FG,fill:gc.slice(2)})},
+          ...visibleCols.map(()=>({v:"",s:cellStyle({fill:gc.slice(2)})}))
+        ]);
+        const groupSubtotals=visibleCols.map(()=>0);
+        (g.items||[]).forEach((item,idx)=>{
+          const alt=idx%2===1;
+          const rowBg=alt?ALT_BG:undefined;
+          const row=[
+            {v:g.nome,s:cellStyle({sz:9,color:TEXT_MUTED,fill:rowBg})},
+            ...visibleCols.map((c,ci)=>{
+              const v=getCellVal(item,c);
+              const isNum=c.tipo==="currency"||c.tipo==="calculated"||c.tipo==="number";
+              const isMoney=c.tipo==="currency"||c.tipo==="calculated"; if(isMoney&&v) groupSubtotals[ci]=(groupSubtotals[ci]||0)+(parseFloat(v)||0);
+              if(c.tipo==="status"&&v){
+                const sColor=getStatusColor(c,String(v));
+                if(sColor){
+                  const sBg=hexToLightBg(sColor);
+                  const sFg=sColor.replace("#","").toUpperCase().padStart(6,"0");
+                  return {v:String(v),s:cellStyle({align:"center",fill:sBg,color:sFg,bold:true,sz:9})};
+                }
+              }
+              const display=c.tipo==="currency"||c.tipo==="calculated"?fmtCur(v):c.tipo==="number"?fmtNum(v):String(v||"");
+              return {v:display,s:cellStyle({align:isNum?"right":"left",fill:rowBg,sz:9,color:TEXT_MAIN})};
+            })
+          ];
+          detailRows.push(row);
+        });
+        const hasMoney=visibleCols.some(c=>c.tipo==="currency"||c.tipo==="calculated");
+        if(hasMoney){
+          detailRows.push([
+            {v:"Subtotal — "+g.nome,s:cellStyle({bold:true,sz:10,color:TOTAL_FG,fill:TOTAL_BG})},
+            ...visibleCols.map((c,ci)=>{
+              const isNum=c.tipo==="currency"||c.tipo==="calculated"||c.tipo==="number";
+              const isMoney2=c.tipo==="currency"||c.tipo==="calculated"; return {v:isMoney2?fmtBRL(groupSubtotals[ci]||0):"",s:cellStyle({bold:true,sz:10,align:isMoney2?"right":"left",color:TOTAL_FG,fill:TOTAL_BG})};
+            })
+          ]);
+        }
+        detailRows.push([{v:""}]);
+      });
+      const wsDetail=XLSX.utils.aoa_to_sheet(detailRows.map(r=>r.map(c=>typeof c==="object"&&"v" in c?c.v:c)));
+      detailRows.forEach((row,ri)=>{row.forEach((cell,ci)=>{if(cell?.s){const ref=XLSX.utils.encode_cell({r:ri,c:ci});if(!wsDetail[ref])wsDetail[ref]={};wsDetail[ref].s=cell.s;}});});
+      const numCols=1+visibleCols.length;
+      wsDetail["!merges"]=[{s:{r:0,c:0},e:{r:0,c:numCols-1}},{s:{r:1,c:0},e:{r:1,c:numCols-1}}];
+      wsDetail["!cols"]=[{wch:24},...visibleCols.map(c=>({wch:c.tipo==="currency"||c.tipo==="calculated"?18:c.tipo==="date"?14:c.tipo==="status"?18:22}))];
+      wsDetail["!rows"]=[{hpt:30},{hpt:16},{hpt:8},{hpt:22}];
+      XLSX.utils.book_append_sheet(wb,wsDetail,board.nome.substring(0,30));
+
+      XLSX.writeFile(wb,board.nome.replace(/\s+/g,"_")+"_"+date+".xlsx");
       toast("Excel exportado com sucesso!");
-    }catch(e){toast("Erro ao exportar Excel: "+e.message,"error");console.error(e);}
+    }catch(e){toast("Erro ao exportar Excel","error");console.error(e);}
     setBusy(false);
   };
-
 
   const exportPDF=()=>{
     setBusy(true);
     try{
       const pdfCols=visibleCols.filter(c=>c.tipo!=="user");
-      const isLandscape=pdfCols.length>6;
+      const isLandscape=pdfCols.length>5;
       const doc=new jsPDF({orientation:isLandscape?"landscape":"portrait",unit:"mm",format:"a4"});
       const pageW=doc.internal.pageSize.getWidth();
       const pageH=doc.internal.pageSize.getHeight();
       const totalLeads=flatGroups.reduce((s,g)=>s+(g.items||[]).length,0);
-      const HEADER_H=28, FOOTER_H=11, MARGIN=7;
 
-      const hexRGB=h=>{const hx=(h||"#4F46E5").replace("#","");return[parseInt(hx.slice(0,2),16)||79,parseInt(hx.slice(2,4),16)||70,parseInt(hx.slice(4,6),16)||229];};
+      // ── Cabeçalho ─────────────────────────────────────────────────────────
+      doc.setFillColor(15,23,42);
+      doc.rect(0,0,pageW,26,"F");
+      doc.setFont("helvetica","bold");
+      doc.setFontSize(14);
+      doc.setTextColor(255,255,255);
+      doc.text((board.icon?board.icon+" ":"")+board.nome,12,12);
+      doc.setFont("helvetica","normal");
+      doc.setFontSize(8);
+      doc.setTextColor(148,163,184);
+      doc.text("Monvatti CRM  •  "+dateStr+"  •  "+totalLeads+" lead(s)  •  "+flatGroups.length+" grupo(s)",12,20);
+      doc.setDrawColor(49,69,255);
+      doc.setLineWidth(0.7);
+      doc.line(0,26,pageW,26);
+
+      const hexRGB=h=>{
+        const hx=(h||"#4F46E5").replace("#","");
+        return [parseInt(hx.slice(0,2),16)||79,parseInt(hx.slice(2,4),16)||70,parseInt(hx.slice(4,6),16)||229];
+      };
       const lightRGB=([r,g,b])=>[Math.round(r*0.18+255*0.82),Math.round(g*0.18+255*0.82),Math.round(b*0.18+255*0.82)];
 
-      // getCellVal correto: calculated = currency / parcelas
-      const pdfGetVal=(item,col)=>{
-        if(col.tipo==="calculated"){
-          const cC=board.columns.find(c=>c.tipo==="currency");
-          const pC=board.columns.find(c=>c.tipo==="number"&&c.nome.toLowerCase().includes("parcela"));
-          if(cC&&pC){const v=parseFloat(item.values?.[cC.id])||0,p=parseFloat(item.values?.[pC.id])||0;return p>0?v/p:0;}
-          return 0;
-        }
-        const v=item.values?.[col.id];
-        if(v==null||v==="") return null;
-        if(col.tipo==="currency"||col.tipo==="number") return parseFloat(v)||0;
-        return String(v);
-      };
-
-      const drawPageHeader=()=>{
-        doc.setFillColor(15,23,42);doc.rect(0,0,pageW,HEADER_H,"F");
-        doc.setFillColor(49,69,255);doc.rect(0,HEADER_H-2,pageW,2,"F");
-        doc.setFont("helvetica","bold");doc.setFontSize(13);doc.setTextColor(255,255,255);
-        doc.text((board.icon?board.icon+" ":"")+board.nome,MARGIN,11);
-        doc.setFont("helvetica","normal");doc.setFontSize(7.5);doc.setTextColor(148,163,184);
-        doc.text("Monvatti CRM  •  "+dateStr+"  •  "+totalLeads+" lead(s)  •  "+flatGroups.length+" grupo(s)",MARGIN,20);
-      };
-      const drawFooter=(pg,total)=>{
-        doc.setFillColor(15,23,42);doc.rect(0,pageH-FOOTER_H,pageW,FOOTER_H,"F");
-        doc.setFont("helvetica","normal");doc.setFontSize(7);doc.setTextColor(148,163,184);
-        doc.text("Monvatti CRM — "+board.nome,MARGIN,pageH-3.5);
-        doc.text("Pág. "+pg+" / "+total,pageW-MARGIN,pageH-3.5,{align:"right"});
-      };
-      drawPageHeader();
-
-      const lastCi=pdfCols.length-1;
-      const isObsCol=(col,ci)=>ci===lastCi||col.nome.toLowerCase()==="obs";
-      // Helper: resolve nomes dos responsáveis de um item
-      const getRespNames=item=>{const parts=Object.entries(item.responsibles||{}).map(([colId,uids])=>{const colName=board.columns.find(c=>c.id===colId)?.nome||"";const names=uids.map(id=>allUsers.find(u=>u.id===id)?.nome||"").filter(Boolean).join(", ");return names?colName+": "+names:"";}).filter(Boolean);return parts.join(" | ")||"—";};
+      // ── Tabela ─────────────────────────────────────────────────────────────
       const body=[];
       flatGroups.forEach(g=>{
         const [r,gn,b2]=hexRGB(g.color||"#4F46E5");
         const parentLabel=g._parentNome?" — "+g._parentNome:"";
-        body.push([{content:(g.nome+parentLabel).toUpperCase()+"  ("+((g.items||[]).length)+" leads)",colSpan:pdfCols.length+1,
-          styles:{fontStyle:"bold",fontSize:8,fillColor:[r,gn,b2],textColor:[255,255,255],cellPadding:{top:4,bottom:4,left:6,right:4},halign:"left"}}]);
+        body.push([{
+          content:(g.nome+parentLabel).toUpperCase()+"   ("+((g.items||[]).length)+" leads)",
+          colSpan:pdfCols.length,
+          styles:{fontStyle:"bold",fontSize:8,fillColor:[r,gn,b2],textColor:[255,255,255],
+            cellPadding:{top:4,bottom:4,left:6,right:6},halign:"left"}
+        }]);
         const subtotals=pdfCols.map(()=>0);
         (g.items||[]).forEach((item,idx)=>{
           const rowBg=idx%2===0?[255,255,255]:[241,245,249];
-          const dataRow=pdfCols.map((col,ci)=>{
-            const raw=pdfGetVal(item,col);
-            const isMoney=col.tipo==="currency"||col.tipo==="calculated";
-            const isNum=isMoney||col.tipo==="number";
-            if(isMoney&&raw!=null) subtotals[ci]+=(raw||0);
-            const display=isMoney?fmtBRL(raw||0):raw!=null?String(raw):"";
-            if(col.tipo==="status"&&display){
-              const sColor=getStatusColor(col,display);
+          body.push(pdfCols.map((col,ci)=>{
+            const v=getCellVal(item,col);
+            const isNum=col.tipo==="currency"||col.tipo==="calculated"||col.tipo==="number";
+            const isMoney=col.tipo==="currency"||col.tipo==="calculated"; if(isMoney&&v) subtotals[ci]=(subtotals[ci]||0)+(parseFloat(v)||0);
+            const display=col.tipo==="currency"||col.tipo==="calculated"?fmtBRL(parseFloat(v)||0):String(v||"");
+            if(col.tipo==="status"&&v){
+              const sColor=getStatusColor(col,String(v));
               if(sColor){
-                const [sr,sg2,sb]=hexRGB(sColor);const[lr,lg,lb]=lightRGB([sr,sg2,sb]);
-                return{content:display,styles:{halign:"center",fontSize:6.5,fontStyle:"bold",fillColor:[lr,lg,lb],textColor:[sr,sg2,sb],cellPadding:{top:3,bottom:3,left:3,right:3}}};
+                const [sr,sg2,sb]=hexRGB(sColor);
+                const [lr,lg,lb]=lightRGB([sr,sg2,sb]);
+                return {content:String(v),styles:{halign:"center",fontSize:7,fontStyle:"bold",
+                  fillColor:[lr,lg,lb],textColor:[sr,sg2,sb],
+                  cellPadding:{top:3,bottom:3,left:4,right:4}}};
               }
             }
-            return{content:display||"—",styles:{halign:isNum?"right":isObsCol(col,ci)?"left":"center",fontSize:7.5,fillColor:rowBg,textColor:[30,41,59],cellPadding:{top:3,bottom:3,left:4,right:4}}};
-          });
-          dataRow.push({content:getRespNames(item),styles:{halign:"left",fontSize:7,fillColor:rowBg,textColor:[30,41,59],cellPadding:{top:3,bottom:3,left:4,right:4}}});
-          body.push(dataRow);
+            return {content:v!=null&&v!==""?display:"—",styles:{
+              halign:isNum?"right":"left",fontSize:7.5,
+              fillColor:rowBg,textColor:[30,41,59],
+              cellPadding:{top:3.5,bottom:3.5,left:5,right:5}}};
+          }));
         });
-        if(pdfCols.some(c=>c.tipo==="currency"||c.tipo==="calculated")){
-          body.push([...pdfCols.map((col,ci)=>{
-            const isMoney=col.tipo==="currency"||col.tipo==="calculated";
-            return{content:ci===0?"SUBTOTAL":isMoney?fmtBRL(subtotals[ci]):"",
-              styles:{fontStyle:"bold",fontSize:7.5,fillColor:[15,71,44],textColor:[255,255,255],halign:isMoney?"right":"center",cellPadding:{top:3.5,bottom:3.5,left:4,right:4}}};
-          }),{content:"",styles:{fontStyle:"bold",fontSize:7.5,fillColor:[15,71,44],textColor:[255,255,255],cellPadding:{top:3.5,bottom:3.5,left:4,right:4}}}]);
+        const hasMoney=pdfCols.some(c=>c.tipo==="currency"||c.tipo==="calculated");
+        if(hasMoney){
+          body.push(pdfCols.map((col,ci)=>{
+            const isMoney2=col.tipo==="currency"||col.tipo==="calculated"; return {content:ci===0?"SUBTOTAL":isMoney2?fmtBRL(subtotals[ci]):"",
+              styles:{fontStyle:"bold",fontSize:7.5,fillColor:[15,71,44],textColor:[255,255,255],
+                halign:isMoney2?"right":"left",cellPadding:{top:3,bottom:3,left:6,right:6}}};
+          }));
         }
-        body.push([{content:"",colSpan:pdfCols.length+1,styles:{fillColor:[248,250,252],cellPadding:{top:2,bottom:2,left:0,right:0}}}]);
+        body.push([{content:"",colSpan:pdfCols.length,styles:{fillColor:[255,255,255],cellPadding:{top:1.5,bottom:1.5,left:0,right:0}}}]);
       });
 
       autoTable(doc,{
-        head:[[ ...pdfCols.map(c=>c.nome), "Responsável" ]],
+        head:[pdfCols.map(c=>c.nome)],
         body,
-        startY:HEADER_H+1,
-        headStyles:{fillColor:[30,41,59],textColor:[255,255,255],fontStyle:"bold",fontSize:8,cellPadding:{top:5,bottom:5,left:4,right:4}},
-        bodyStyles:{fontSize:7.5,textColor:[30,41,59],cellPadding:{top:3,bottom:3,left:4,right:4}},
-        tableLineColor:[203,213,225],tableLineWidth:0.15,
-        margin:{left:MARGIN,right:MARGIN,top:HEADER_H+1,bottom:FOOTER_H+2},
-        columnStyles:{...Object.fromEntries(pdfCols.map((col,i)=>{
-          const isMoney=col.tipo==="currency"||col.tipo==="calculated";
-          const isNum=isMoney||col.tipo==="number";
-          return[i,{halign:isNum?"right":isObsCol(col,i)?"left":"center",
-            cellWidth:col.nome==="Razão Social"?"auto":isMoney?26:col.tipo==="date"?18:col.tipo==="status"?18:col.tipo==="number"?12:undefined}];
-        })),[pdfCols.length]:{halign:"left",cellWidth:28}},
+        startY:29,
+        headStyles:{fillColor:[30,41,59],textColor:[255,255,255],fontStyle:"bold",fontSize:8,
+          cellPadding:{top:5,bottom:5,left:5,right:5}},
+        bodyStyles:{fontSize:7.5,textColor:[30,41,59],cellPadding:{top:3.5,bottom:3.5,left:5,right:5}},
+        tableLineColor:[203,213,225],
+        tableLineWidth:0.2,
+        margin:{left:8,right:8,top:29},
+        columnStyles:Object.fromEntries(pdfCols.map((c,i)=>[i,{
+          halign:c.tipo==="currency"||c.tipo==="calculated"||c.tipo==="number"?"right":"left",
+          minCellWidth:c.tipo==="currency"||c.tipo==="calculated"?24:c.tipo==="date"?18:c.tipo==="status"?20:undefined,
+        }])),
         didDrawPage:()=>{
-          drawPageHeader();
           const pg=doc.internal.getCurrentPageInfo().pageNumber;
           const total=doc.internal.getNumberOfPages();
-          drawFooter(pg,total);
+          doc.setFillColor(15,23,42);
+          doc.rect(0,pageH-10,pageW,10,"F");
+          doc.setFont("helvetica","normal");
+          doc.setFontSize(7);
+          doc.setTextColor(148,163,184);
+          doc.text("Monvatti CRM — "+board.nome,8,pageH-3.5);
+          doc.text("Pág. "+pg+" / "+total,pageW-8,pageH-3.5,{align:"right"});
         },
       });
-
-      // Garante rodapé correto em todas as páginas
-      const totalPgs=doc.internal.getNumberOfPages();
-      for(let p=1;p<=totalPgs;p++){doc.setPage(p);drawFooter(p,totalPgs);}
 
       doc.save(board.nome.replace(/\s+/g,"_")+"_"+date+".pdf");
       toast("PDF exportado com sucesso!");
@@ -2004,7 +2074,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                         onDragOver={e=>onItemDragOver(e,item.id,group.id)}
                         onDrop={e=>onItemDrop(e,item.id,group.id)}
                         onUpdateValue={(cid,v)=>onUpdateValue(item.id,cid,v)}
-                        onRespChange={(colId,ids)=>onRespChange(item.id,colId,ids)}
+                        onRespChange={ids=>onRespChange(item.id,ids)}
                         sentToNegIds={sentToNegIds}
                         stickyFirstCols={stickyFirstCols}
                         colWidths={colWidths}
@@ -2116,7 +2186,7 @@ function ItemPanel({item,board,allUsers,currentUser,onClose,onUpdateValue,onResp
                 <div style={{flex:1,minWidth:0}}>
                   <Cell col={col} values={item.values} allColumns={board.columns}
                     responsibles={item.responsibles} allUsers={allUsers}
-                    onChange={v=>onUpdateValue(col.id,v)} onRespChange={(colId,ids)=>onRespChange(colId,ids)}/>
+                    onChange={v=>onUpdateValue(col.id,v)} onRespChange={onRespChange}/>
                 </div>
               </div>
             ))}
@@ -2341,7 +2411,7 @@ function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedIt
               onToggle={()=>toggleSg(sg.id)}
               onOpenItem={item=>onOpenItem(item,sg.id)}
               onUpdateValue={(iid,cid,v)=>onUpdateValue(iid,sg.id,cid,v)}
-              onRespChange={(iid,colId,ids)=>onRespChange(iid,sg.id,colId,ids)}
+              onRespChange={(iid,ids)=>onRespChange(iid,sg.id,ids)}
               onDelItem={iid=>onDelItem(sg.id,iid)}
               onMoveInativa={onMoveInativa?item=>onMoveInativa(sg.id,item):null}
               onDupNeg={onDupNeg?item=>onDupNeg(sg.id,item):null}
@@ -2538,7 +2608,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
       const vals=valsArr.flatMap(r=>r.data||[]);
       const resps=respsArr.flatMap(r=>r.data||[]);
       for(const v of vals){if(!vMap[v.item_id])vMap[v.item_id]={};vMap[v.item_id][v.column_id]=v.value;}
-      for(const r of resps){const rk=r.item_id+"__"+r.column_id;if(!rMap[rk])rMap[rk]=[];rMap[rk].push(r.user_id);}
+      for(const r of resps){if(!rMap[r.item_id])rMap[r.item_id]=[];rMap[r.item_id].push(r.user_id);}
     }
     // Carrega group_access para todos os grupos do board
     const gids=(grps||[]).map(g=>g.id);
@@ -2554,7 +2624,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     const columns=(cols||[]).map(c=>({...c,config:typeof c.config==="string"?JSON.parse(c.config):(c.config||{})}));
     const groups=(grps||[]).map(g=>({
       ...g,
-      items:(itens||[]).filter(i=>i.group_id===g.id).map(i=>{const rbc={};for(const col of columns.filter(c=>c.tipo==="user")){rbc[col.id]=rMap[i.id+"__"+col.id]||[];}return{...i,values:vMap[i.id]||{},responsibles:rbc,updates:[]};}).filter(Boolean)
+      items:(itens||[]).filter(i=>i.group_id===g.id).map(i=>({...i,values:vMap[i.id]||{},responsibles:rMap[i.id]||[],updates:[]}))
     }));
     setBoard({...bData,columns,groups});
 
@@ -2582,13 +2652,13 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
   const addItem=async gid=>{
     const {data,error}=await db.from("items").insert({board_id:boardId,group_id:gid,ordem:9999}).select().single();
     if(error){toast("Erro ao criar item","error");return;}
-    const firstUserCol=board.columns.find(c=>c.tipo==="user");
+    // Auto-preenche responsável com o owner do grupo
     const group=board?.groups.find(g=>g.id===gid);
     const ownerIds=group?.owner_id?[group.owner_id]:[];
-    if(ownerIds.length&&firstUserCol){
-      await db.from("item_responsables").insert(ownerIds.map(uid=>({item_id:data.id,user_id:uid,column_id:firstUserCol.id})));
+    if(ownerIds.length){
+      await db.from("item_responsables").insert(ownerIds.map(uid=>({item_id:data.id,user_id:uid})));
     }
-    upd(b=>{b.groups.find(g=>g.id===gid)?.items.push({...data,values:{},responsibles:firstUserCol?{[firstUserCol.id]:ownerIds}:{},updates:[]});});
+    upd(b=>{b.groups.find(g=>g.id===gid)?.items.push({...data,values:{},responsibles:ownerIds,updates:[]});});
     bump(boardId,1);
   };
 
@@ -2598,11 +2668,11 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     await db.from("item_values").upsert({item_id:iid,column_id:cid,value:val},{onConflict:"item_id,column_id"});
   };
 
-  const updateResp=async(iid,gid,colId,ids)=>{
-    upd(b=>{const item=b.groups.find(g=>g.id===gid)?.items.find(i=>i.id===iid);if(item)item.responsibles={...(item.responsibles||{}),[colId]:ids};});
-    if(selItem?.id===iid)setSelItem(p=>({...p,responsibles:{...(p.responsibles||{}),[colId]:ids}}));
-    await db.from("item_responsables").delete().eq("item_id",iid).eq("column_id",colId);
-    if(ids.length)await db.from("item_responsables").insert(ids.map(uid=>({item_id:iid,user_id:uid,column_id:colId})));
+  const updateResp=async(iid,gid,ids)=>{
+    upd(b=>{const item=b.groups.find(g=>g.id===gid)?.items.find(i=>i.id===iid);if(item)item.responsibles=ids;});
+    if(selItem?.id===iid)setSelItem(p=>({...p,responsibles:ids}));
+    await db.from("item_responsables").delete().eq("item_id",iid);
+    if(ids.length)await db.from("item_responsables").insert(ids.map(uid=>({item_id:iid,user_id:uid})));
   };
 
   const delItem=async(gid,iid)=>{
@@ -2631,7 +2701,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
   const itemIsComplete=(item)=>{
     return board.columns.every(col=>{
       if(col.tipo==="calculated") return true; // calculado não precisa
-      if(col.tipo==="user"){const rb=item.responsibles||{};return Object.values(rb).some(arr=>arr.length>0);}
+      if(col.tipo==="user") return (item.responsibles||[]).length>0;
       const v=item.values?.[col.id];
       return v!=null&&v!=="";
     });
@@ -2815,19 +2885,6 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     if(toInsert.length) await db.from("item_values").insert(toInsert);
   };
 
-  const copyResponsibles=async(srcItem,srcCols,tgtItemId,tgtCols)=>{
-    // Mapeia pelo NOME da coluna user: Closer→Closer, SDR→SDR no destino
-    const tgtUserByName=Object.fromEntries(tgtCols.filter(c=>c.tipo==="user").map(c=>[c.nome.toLowerCase().trim(),c.id]));
-    const rows=[];
-    for(const [srcColId,uids] of Object.entries(srcItem.responsibles||{})){
-      const srcCol=srcCols.find(c=>c.id===srcColId);
-      if(!srcCol) continue;
-      const tgtColId=tgtUserByName[srcCol.nome.toLowerCase().trim()];
-      if(tgtColId) for(const uid of uids) rows.push({item_id:tgtItemId,user_id:uid,column_id:tgtColId});
-    }
-    if(rows.length) await db.from("item_responsables").insert(rows);
-  };
-
   const copyUpdates=async(srcItemId,tgtItemId)=>{
     const {data:upds}=await db.from("item_updates").select("*").eq("item_id",srcItemId).order("created_at");
     if(!upds?.length) return;
@@ -2848,7 +2905,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",iBoard.id);
     await copyMatchingValues(item.id,board.columns,newItem.id,tgtCols||[]);
     // Copia responsáveis
-    await copyResponsibles(item,board.columns,newItem.id,tgtCols||[]);
+    if(item.responsibles?.length) await db.from("item_responsables").insert(item.responsibles.map(uid=>({item_id:newItem.id,user_id:uid})));
     // Copia atualizações
     await copyUpdates(item.id,newItem.id);
     // Exclui original
@@ -2873,7 +2930,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
         const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",nBoard.id);
         await copyMatchingValues(item.id,board.columns,ni.id,tgtCols||[]);
         // Responsáveis
-        await copyResponsibles(item,board.columns,ni.id,tgtCols||[]);
+        if(item.responsibles?.length) await db.from("item_responsables").insert(item.responsibles.map(uid=>({item_id:ni.id,user_id:uid})));
         // Atualizações
         await copyUpdates(item.id,ni.id);
         bump(nBoard.id,1);
@@ -2900,7 +2957,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
         if(!ni){toast("Erro ao criar item","error");return;}
         const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",negBoard.id);
         await copyMatchingValues(item.id,board.columns,ni.id,tgtCols||[]);
-        await copyResponsibles(item,board.columns,ni.id,tgtCols||[]);
+        if(item.responsibles?.length) await db.from("item_responsables").insert(item.responsibles.map(uid=>({item_id:ni.id,user_id:uid})));
         await copyUpdates(item.id,ni.id);
         bump(negBoard.id,1);
         await logAct(currentUser?.id,wsId,"item",ni.id,"created",{via:"sendToNeg",from:item.id});
@@ -2936,7 +2993,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
         if(!ni){toast("Erro ao criar item em Vendas","error");setGroupSelM(null);return;}
         const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",vendasBoard.id);
         await copyMatchingValues(item.id,board.columns,ni.id,tgtCols||[]);
-        await copyResponsibles(item,board.columns,ni.id,tgtCols||[]);
+        if(item.responsibles?.length) await db.from("item_responsables").insert(item.responsibles.map(uid=>({item_id:ni.id,user_id:uid})));
         await copyUpdates(item.id,ni.id);
         bump(vendasBoard.id,1);
         toast("🏆 Lead enviado para Vendas!");
@@ -2955,7 +3012,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
         .filter(c=>c.tipo!=="calculated")
         .map(c=>{
           const v=c.tipo==="user"
-            ? ((item.responsibles||{})[c.id]||[]).map(id=>allUsers.find(u=>u.id===id)?.nome||id).join(", ")
+            ? (item.responsibles||[]).map(id=>allUsers.find(u=>u.id===id)?.nome||id).join(", ")
             : item.values?.[c.id];
           return v?`${c.nome}: ${v}`:null;
         })
@@ -3146,10 +3203,8 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     return [...items].sort((a,b)=>{
       // Ordenação por responsável
       if(colId==="__resp__"){
-        const firstRespA=Object.values(a.responsibles||{})[0]?.[0];
-        const firstRespB=Object.values(b.responsibles||{})[0]?.[0];
-        const nameA=(allUsers.find(u=>firstRespA===u.id)?.nome||"").toLowerCase();
-        const nameB=(allUsers.find(u=>firstRespB===u.id)?.nome||"").toLowerCase();
+        const nameA=(allUsers.find(u=>a.responsibles?.[0]===u.id)?.nome||"").toLowerCase();
+        const nameB=(allUsers.find(u=>b.responsibles?.[0]===u.id)?.nome||"").toLowerCase();
         return dir*(nameA<nameB?-1:nameA>nameB?1:0);
       }
       const vA=a.values?.[colId]; const vB=b.values?.[colId];
@@ -3169,14 +3224,14 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     let r=items;
     if(search.trim()){
       const q=search.toLowerCase();
-      r=r.filter(i=>Object.values(i.values||{}).some(v=>v&&String(v).toLowerCase().includes(q))||allUsers.filter(u=>Object.values(i.responsibles||{}).some(arr=>arr.includes(u.id))).some(u=>u.nome.toLowerCase().includes(q)));
+      r=r.filter(i=>Object.values(i.values||{}).some(v=>v&&String(v).toLowerCase().includes(q))||allUsers.filter(u=>i.responsibles?.includes(u.id)).some(u=>u.nome.toLowerCase().includes(q)));
     }
     if(filters.status?.length){
       const sCols=board?.columns?.filter(c=>c.tipo==="status")||[];
       // Compara com o label armazenado (string) — compatível com formato antigo e novo
       r=r.filter(i=>filters.status.some(label=>sCols.some(c=>i.values?.[c.id]===label)));
     }
-    if(filters.resp?.length) r=r.filter(i=>filters.resp.some(uid=>Object.values(i.responsibles||{}).some(arr=>arr.includes(uid))));
+    if(filters.resp?.length) r=r.filter(i=>filters.resp.some(uid=>i.responsibles?.includes(uid)));
     // Filtro por intervalo de datas
     if(filters.dateFrom||filters.dateTo||filters.month){
       const dateCols=board?.columns?.filter(c=>c.tipo==="date")||[];
@@ -3364,7 +3419,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
                 onDelItem={(gid,iid)=>setConfirmM({title:"Excluir item",danger:true,message:"Excluir permanentemente?",onConfirm:()=>{delItem(gid,iid);setConfirmM(null);}})}
                 onOpenItem={(item,gid)=>loadUpdates(item,gid)}
                 onUpdateValue={(iid,gid,cid,v)=>updateValue(iid,gid,cid,v)}
-                onRespChange={(iid,gid,colId,ids)=>updateResp(iid,gid,colId,ids)}
+                onRespChange={(iid,gid,ids)=>updateResp(iid,gid,ids)}
                 onMoveInativa={canActions?(gid,item)=>moveInativa(gid,item):null}
                 onDupNeg={null}
                 onSendToNeg={isPreVendas?(gid,item)=>sendToNeg(gid,item):null}
@@ -3391,7 +3446,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
                 onRenameGroup={n=>renameGroup(group.id,n)} onToggle={()=>toggleGroup(group.id)}
                 onOpenItem={item=>loadUpdates(item,group.id)}
                 onUpdateValue={(iid,cid,v)=>updateValue(iid,group.id,cid,v)}
-                onRespChange={(iid,colId,ids)=>updateResp(iid,group.id,colId,ids)}
+                onRespChange={(iid,ids)=>updateResp(iid,group.id,ids)}
                 onDelItem={iid=>setConfirmM({title:"Excluir item",danger:true,message:"Excluir permanentemente?",onConfirm:()=>{delItem(group.id,iid);setConfirmM(null);}})}
                 onMoveInativa={canActions?item=>moveInativa(group.id,item):null}
                 onDupNeg={null}
@@ -3429,14 +3484,14 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
         <ItemPanel item={selItem} board={board} allUsers={allUsers} currentUser={currentUser}
           onClose={()=>setSelItem(null)}
           onUpdateValue={(cid,v)=>updateValue(selItem.id,selItem._gid,cid,v)}
-          onRespChange={(colId,ids)=>updateResp(selItem.id,selItem._gid,colId,ids)}
+          onRespChange={ids=>updateResp(selItem.id,selItem._gid,ids)}
           onAddUpdate={html=>addUpdate(selItem.id,selItem._gid,html)}
           onDelUpdate={uid=>delUpdate(uid)}
         />
       )}
       {showFilters&&<FilterPanel board={board} allUsers={allUsers} filters={filters} setFilters={setFilters} onClose={()=>setShowFilters(false)}/>}
       {showColMgr&&<ColumnManagerModal board={board} toast={toast} onClose={()=>setShowColMgr(false)} onRefresh={()=>loadBoard(boardId)}/>}
-      {showExport&&<ExportModal board={{...board,groups:visibleGroups}} allUsers={allUsers} onClose={()=>setShowExport(false)}/>}
+      {showExport&&<ExportModal board={{...board,groups:visibleGroups}} onClose={()=>setShowExport(false)}/>}
       {parentGroupM!==null&&(
         <ParentGroupModal
           initial={parentGroupM?.id?parentGroupM:null}
@@ -3912,7 +3967,8 @@ function MoveItemsModal({items,srcBoard,allBoards,onMove,onCancel}) {
         if(tgtId) toInsert.push({item_id:ni.id,column_id:tgtId,value:v.value});
       }
       if(toInsert.length) await db.from("item_values").insert(toInsert);
-      await copyResponsibles(item,board.columns,ni.id,tgtCols||[]);
+      if(item.responsibles?.length)
+        await db.from("item_responsables").insert(item.responsibles.map(uid=>({item_id:ni.id,user_id:uid})));
       const {data:upds}=await db.from("item_updates").select("*").eq("item_id",item.id);
       if(upds?.length)
         await db.from("item_updates").insert(upds.map(u=>({item_id:ni.id,content:u.content,created_by:u.created_by})));
