@@ -1664,7 +1664,8 @@ function ItemMenuOpt({icon,label,onClick,danger=false}) {
 }
 
 function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,
-  onDragStart,onDragOver,onDrop,onUpdateValue,onRespChange,sentToNegIds=new Set(),stickyFirstCols=0,colWidths=null}) {
+  onDragStart,onDragOver,onDrop,onUpdateValue,onRespChange,sentToNegIds=new Set(),stickyFirstCols=0,colWidths=null,
+  siblingStages=null,onMoveStage=null}) {
   const [hov,setHov]=useState(false);
   const [menu,setMenu]=useState(false);
   const [menuPos,setMenuPos]=useState({top:0,right:0});
@@ -1731,6 +1732,16 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
                 : <ItemMenuOpt icon="🤝" label="Enviar para Negociações" onClick={()=>{setMenu(false);onSendToNeg();}}/>
             )}
             {onSendToVendas&&<ItemMenuOpt icon="🏆" label="Enviar para Vendas" onClick={()=>{setMenu(false);onSendToVendas();}}/>}
+            {siblingStages&&siblingStages.length>0&&<>
+              <div style={{height:1,background:"var(--border)",margin:"5px 0"}}/>
+              <div style={{padding:"3px 13px 4px",fontSize:10.5,fontWeight:700,color:"var(--text3)",textTransform:"uppercase",letterSpacing:.5}}>Mover para</div>
+              {siblingStages.map(sg=>(
+                <ItemMenuOpt key={sg.id}
+                  icon={<span style={{display:"inline-block",width:9,height:9,borderRadius:"50%",background:sg.color||"#888",flexShrink:0}}/>}
+                  label={sg.nome}
+                  onClick={()=>{setMenu(false);onMoveStage&&onMoveStage(item,sg.id);}}/>
+              ))}
+            </>}
             <div style={{height:1,background:"var(--border)",margin:"5px 0"}}/>
             <ItemMenuOpt icon="🗑️" label="Excluir item" danger onClick={()=>{setMenu(false);onDelete();}}/>
           </div>,
@@ -1847,7 +1858,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
   onToggleItem,onSelectAll,onAddItem,onDelGroup,onRenameGroup,onToggle,
   onOpenItem,onUpdateValue,onRespChange,onDelItem,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,
   onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,sentToNegIds=new Set(),
-  sortCfg={colId:null,dir:1},setSortCfg=()=>{},stickyFirstCols=0}) {
+  sortCfg={colId:null,dir:1},setSortCfg=()=>{},stickyFirstCols=0,siblingStages=null,onMoveStage=null}) {
   const [renaming,setRenaming]=useState(false);
   const [gname,setGname]=useState(group.nome);
   const [localCollapsed,setLocalCollapsed]=useState(true); // inicia minimizado
@@ -2078,6 +2089,8 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                         sentToNegIds={sentToNegIds}
                         stickyFirstCols={stickyFirstCols}
                         colWidths={colWidths}
+                        siblingStages={siblingStages}
+                        onMoveStage={onMoveStage?(it,tgtGid)=>onMoveStage(it,group.id,tgtGid):null}
                       />
                     ))}
                   </tbody>
@@ -2341,7 +2354,7 @@ function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedIt
   onUpdateValue,onRespChange,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,sentToNegIds=new Set(),
   sortCfg={colId:null,dir:1},setSortCfg=()=>{},
   onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,
-  onRenameSubGroup,onDelSubGroup,onEditParent,onDelParent}) {
+  onRenameSubGroup,onDelSubGroup,onEditParent,onDelParent,onMoveStage}) {
 
   const [collapsed,setCollapsed]=useState(true);  // inicia minimizado
   // Estado local de colapso por sub-grupo (id → bool) — inicia minimizado
@@ -2421,7 +2434,9 @@ function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedIt
               sortCfg={sortCfg} setSortCfg={setSortCfg}
               onDragStart={onDragStart} onDragOver={e=>onDragOver(e,sg.id)} onDrop={e=>onDrop(e,sg.id)}
               onItemDragOver={onItemDragOver} onItemDrop={onItemDrop}
-              onGroupSettings={null}/>
+              onGroupSettings={null}
+              siblingStages={subGroups.filter(x=>x.id!==sg.id).map(x=>({id:x.id,nome:x.nome,color:x.color,ordem:x.ordem}))}
+              onMoveStage={onMoveStage}/>
           ))}
           {!subGroups.length&&<div style={{padding:"12px 16px",color:"var(--text3)",fontSize:13}}>Nenhum sub-grupo</div>}
         </div>
@@ -2570,6 +2585,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
   const [showColMgr,setShowColMgr]=useState(false);
   const [showExport,setShowExport]=useState(false);
   const [selected,setSelected]=useState(new Set());
+  const [stageMenuOpen,setStageMenuOpen]=useState(false); // menu "Mover para etapa" da barra de seleção
   const [dragState,setDragState]=useState(null);
   const [dragOverGroup,setDragOverGroup]=useState(null);
   const [confirmM,setConfirmM]=useState(null);
@@ -3164,17 +3180,22 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     // ── Drag & drop com persistência de ordem
   const handleDragStart=(e,item,gid)=>{setDragState({itemId:item.id,srcGroupId:gid,item});e.dataTransfer.effectAllowed="move";};
   const handleGroupDragOver=(e,gid)=>{e.preventDefault();setDragOverGroup(gid);};
+  // Move um único item para outro grupo — fonte única usada pelo arrastar E pelo menu "..."
+  const moveItemToGroup=async(item,srcGroupId,tgtGroupId)=>{
+    if(!item||!tgtGroupId||srcGroupId===tgtGroupId) return;
+    upd(b=>{
+      const src=b.groups.find(g=>g.id===srcGroupId);
+      const tgt=b.groups.find(g=>g.id===tgtGroupId);
+      if(src&&tgt){src.items=src.items.filter(i=>i.id!==item.id);tgt.items.push({...item,group_id:tgtGroupId});}
+    });
+    await db.from("items").update({group_id:tgtGroupId,ordem:9999}).eq("id",item.id);
+  };
   const handleGroupDrop=async(e,tgtGid)=>{
     e.preventDefault();
     if(!dragState||dragState.srcGroupId===tgtGid){setDragState(null);setDragOverGroup(null);return;}
     const {srcGroupId,item}=dragState;
-    upd(b=>{
-      const src=b.groups.find(g=>g.id===srcGroupId);
-      const tgt=b.groups.find(g=>g.id===tgtGid);
-      if(src&&tgt){src.items=src.items.filter(i=>i.id!==item.id);tgt.items.push({...item,group_id:tgtGid});}
-    });
     setDragState(null);setDragOverGroup(null);
-    await db.from("items").update({group_id:tgtGid,ordem:9999}).eq("id",item.id);
+    await moveItemToGroup(item,srcGroupId,tgtGid);
   };
   const handleItemDragOver=(e,overItemId,gid)=>{e.preventDefault();setDragState(p=>p?({...p,targetItemId:overItemId,targetGroupId:gid}):p);};
   const handleItemDrop=async(e,overItemId,gid)=>{
@@ -3194,6 +3215,42 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
       if(sorted) await Promise.all(sorted.map(it=>db.from("items").update({ordem:it.ordem}).eq("id",it.id)));
     }
     setDragState(null);setDragOverGroup(null);
+  };
+
+  // ── Etapas (grupos filhos padronizados) para o "Mover para etapa" da barra de seleção
+  const stageOptions=(()=>{
+    const seen={};
+    (board?.groups||[]).filter(g=>g.parent_group_id).forEach(g=>{
+      if(seen[g.ordem]==null) seen[g.ordem]={ordem:g.ordem,nome:g.nome,color:g.color};
+    });
+    return Object.values(seen).sort((a,b)=>a.ordem-b.ordem);
+  })();
+  // Move os leads selecionados para a etapa (ordem) do PRÓPRIO grupo-mãe de cada um.
+  // Leads em grupos sem grupo-mãe (legacy) são ignorados.
+  const bulkMoveToStage=async(ordem)=>{
+    const ids=[...selected];
+    const plan=[]; let skipped=0;
+    ids.forEach(id=>{
+      const src=board.groups.find(g=>(g.items||[]).some(i=>i.id===id));
+      if(!src||!src.parent_group_id){skipped++;return;}
+      const tgt=board.groups.find(g=>g.parent_group_id===src.parent_group_id&&g.ordem===ordem);
+      if(!tgt){skipped++;return;}
+      if(tgt.id===src.id) return; // já está nessa etapa
+      plan.push({id,srcId:src.id,tgtId:tgt.id});
+    });
+    if(plan.length){
+      upd(b=>{
+        plan.forEach(p=>{
+          const src=b.groups.find(g=>g.id===p.srcId);
+          const tgt=b.groups.find(g=>g.id===p.tgtId);
+          if(src&&tgt){const it=src.items.find(i=>i.id===p.id);if(it){src.items=src.items.filter(i=>i.id!==p.id);tgt.items.push({...it,group_id:p.tgtId});}}
+        });
+      });
+      await Promise.all(plan.map(p=>db.from("items").update({group_id:p.tgtId,ordem:9999}).eq("id",p.id)));
+    }
+    toast(`${plan.length} lead(s) movido(s)`+(skipped?` · ${skipped} fora de grupo-mãe ignorado(s)`:""),plan.length?"success":"warning");
+    setSelected(new Set());
+    setStageMenuOpen(false);
   };
 
   // ── Filtros combinados
@@ -3434,7 +3491,8 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
                 onRenameSubGroup={(gid,n)=>renameGroup(gid,n)}
                 onDelSubGroup={gid=>delGroup(gid)}
                 onEditParent={pg=>setParentGroupM(pg)}
-                onDelParent={pgid=>delParentGroup(pgid)}/>
+                onDelParent={pgid=>delParentGroup(pgid)}
+                onMoveStage={(item,srcGid,tgtGid)=>moveItemToGroup(item,srcGid,tgtGid)}/>
             : <Group key={group.id} group={group} columns={board.columns}
                 items={group.items}
                 isDraggingOver={dragOverGroup===group.id}
@@ -3509,6 +3567,29 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
             style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"8px 14px",fontSize:12}}>
             📦 Mover para quadro
           </button>
+          {stageOptions.length>0&&(
+            <div style={{position:"relative"}}>
+              <button onClick={()=>setStageMenuOpen(p=>!p)}
+                style={{...T.btn,background:"rgba(255,255,255,.12)",color:"#fff",border:"1px solid rgba(255,255,255,.25)",padding:"8px 14px",fontSize:12}}>
+                ↔ Mover para etapa ▾
+              </button>
+              {stageMenuOpen&&(
+                <div style={{position:"absolute",bottom:"calc(100% + 8px)",left:0,minWidth:230,
+                  background:"var(--surface)",border:"1px solid var(--border)",borderRadius:11,
+                  boxShadow:"0 12px 48px var(--shadowMd)",padding:7,zIndex:1600}}>
+                  {stageOptions.map(st=>(
+                    <div key={st.ordem} onClick={()=>bulkMoveToStage(st.ordem)}
+                      style={{display:"flex",alignItems:"center",gap:10,padding:"9px 12px",borderRadius:7,cursor:"pointer",fontSize:13,color:"var(--text)"}}
+                      onMouseEnter={e=>e.currentTarget.style.background="var(--surface3)"}
+                      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                      <span style={{display:"inline-block",width:9,height:9,borderRadius:"50%",background:st.color||"#888",flexShrink:0}}/>
+                      {st.nome}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <button onClick={bulkDelete}
             style={{...T.btn,background:"#dc2626",color:"#fff",padding:"8px 14px",fontSize:12}}>
             🗑️ Excluir
