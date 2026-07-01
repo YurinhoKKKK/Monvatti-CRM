@@ -3344,9 +3344,20 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
       let gs=board.groups;
       if(perms.slug==="sdr") gs=gs.filter(g=>g.owner_id===currentUser?.id);
       else if(perms.slug==="closer") gs=gs.filter(g=>(groupAccess[g.id]||[]).includes(currentUser?.id));
-      // Para Vendas: aplica filtro de período adicional
+      // Para Vendas: aplica filtro de período adicional.
+      // Âncora = valor da coluna "Data Entrada" (e NÃO o created_at, que é quando o lead
+      // entrou no quadro Vendas). Fallback para created_at se a data não estiver preenchida.
+      const deCol=(board.columns||[]).find(c=>c.tipo==="date"&&c.nome==="Data Entrada");
+      const anchorDate=item=>{
+        const raw=deCol?item.values?.[deCol.id]:null;
+        if(typeof raw==="string"&&/^\d{4}-\d{2}-\d{2}/.test(raw)){
+          const[y,m,dd]=raw.slice(0,10).split("-").map(Number);
+          return new Date(y,m-1,dd); // parse LOCAL, alinhado ao cálculo de mês abaixo (evita erro de fuso)
+        }
+        return new Date(item.created_at);
+      };
       const inVendasPeriod=isVendas?item=>{
-        const d=new Date(item.created_at);
+        const d=anchorDate(item);
         if(vendasFilter.mode==="month"&&vendasFilter.month){
           const[y,m]=vendasFilter.month.split("-");
           const s=new Date(parseInt(y),parseInt(m)-1,1);
@@ -4993,19 +5004,12 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
       const{data:allCols}=await db.from("columns").select("id,board_id,nome,tipo,config").in("board_id",boardIds);
       setCols(allCols||[]);
 
-      // Items do período selecionado
-      let itemQ=db.from("items").select("id,board_id,created_at").in("board_id",boardIds);
-      if(filterMode==="month"&&selMonth){
-        const[y,m]=selMonth.split("-");
-        // Usa meia-noite LOCAL (igual ao inPeriod) para consistência de timezone
-        const startLocal=new Date(parseInt(y),parseInt(m)-1,1);
-        const endLocal=new Date(parseInt(y),parseInt(m),1);
-        itemQ=itemQ.gte("created_at",startLocal.toISOString()).lt("created_at",endLocal.toISOString());
-      }else if(filterMode==="range"&&rangeStart&&rangeEnd){
-        itemQ=itemQ.gte("created_at",rangeStart+"T00:00:00Z").lte("created_at",rangeEnd+"T23:59:59Z");
-      }
-      // filterMode==="all": sem filtro, busca todos
-      const{data:items}=await itemQ.order("created_at",{ascending:true});
+      // Busca TODOS os itens dos 3 boards. O recorte por período é feito no cliente
+      // (inPeriod), ancorado na coluna "Data Entrada" de cada board — e NÃO no created_at,
+      // que reflete apenas quando a linha foi criada no quadro. Isto evita que um lead
+      // com Data Entrada no período, mas criado fora dele, fique de fora da busca.
+      const{data:items}=await db.from("items").select("id,board_id,created_at")
+        .in("board_id",boardIds).order("created_at",{ascending:true});
 
       // Todos negociações (sem filtro) para proposta na rua
       const negB=bds.find(b=>b.nome==="Negociações");
@@ -5091,6 +5095,25 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
     const negOriC=gC("Negociações","Origem","status");
     const preMqlC=gC("Pré - Vendas","MQL","status");
 
+    // Colunas "Data Entrada" por board (âncora de período). Negociações NÃO tem essa
+    // coluna → mantém o created_at (que é o marco de entrada no board de Negociações).
+    const venDeC=gC("Vendas","Data Entrada","date");
+    const preDeC=gC("Pré - Vendas","Data Entrada","date");
+    const deColByBoard={};
+    if(venB&&venDeC) deColByBoard[venB.id]=venDeC.id;
+    if(preB&&preDeC) deColByBoard[preB.id]=preDeC.id;
+    // Data-âncora de um item: valor da "Data Entrada" do seu board (parse LOCAL, evita
+    // erro de fuso); fallback para created_at se não houver coluna ou valor.
+    const anchorDate=it=>{
+      const cid=deColByBoard[it.board_id];
+      const raw=cid?gV(it.id,cid):null;
+      if(typeof raw==="string"&&/^\d{4}-\d{2}-\d{2}/.test(raw)){
+        const[y,m,dd]=raw.slice(0,10).split("-").map(Number);
+        return new Date(y,m-1,dd);
+      }
+      return new Date(it.created_at);
+    };
+
     // Função de filtro de período
     const inPeriod=it=>{
       if(filterMode==="all") return true;
@@ -5098,11 +5121,11 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
         const[y,m]=selMonth.split("-");
         const s=new Date(parseInt(y),parseInt(m)-1,1);
         const e=new Date(parseInt(y),parseInt(m),1);
-        const d=new Date(it.created_at);return d>=s&&d<e;
+        const d=anchorDate(it);return d>=s&&d<e;
       }
       if(filterMode==="range"&&rangeStart&&rangeEnd){
         const s=new Date(rangeStart);const e=new Date(rangeEnd+"T23:59:59Z");
-        const d=new Date(it.created_at);return d>=s&&d<=e;
+        const d=anchorDate(it);return d>=s&&d<=e;
       }
       // filterMode definido mas sem parâmetros suficientes → não exibe nada
       return false;
@@ -5180,7 +5203,7 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
       mesMap[k]=0;
     }
     venAll8m.forEach(it=>{
-      const d=new Date(it.created_at);
+      const d=anchorDate(it);
       const k=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
       if(k in mesMap){mesMap[k]+=(parseFloat(gV(it.id,venValC?.id))||0);}
     });
@@ -5368,10 +5391,28 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
               const preB2=boards.find(b=>b.nome==="Pré - Vendas");
               const negB2=boards.find(b=>b.nome==="Negociações");
               const venB2=boards.find(b=>b.nome==="Vendas");
+              // Âncora por "Data Entrada" (Vendas/Pré-Vendas); Negociações usa created_at.
+              const venDe2=cols.find(c=>c.board_id===venB2?.id&&c.nome==="Data Entrada"&&c.tipo==="date");
+              const preDe2=cols.find(c=>c.board_id===preB2?.id&&c.nome==="Data Entrada"&&c.tipo==="date");
+              const deColByBoard2={};
+              if(venB2&&venDe2)deColByBoard2[venB2.id]=venDe2.id;
+              if(preB2&&preDe2)deColByBoard2[preB2.id]=preDe2.id;
+              const deVal2={};
+              for(const rv of rawVals){
+                if(rv.column_id===venDe2?.id||rv.column_id===preDe2?.id){
+                  const v=rv.value;deVal2[rv.item_id]=(v&&typeof v==="object"&&"value" in v)?v.value:v;
+                }
+              }
+              const anchorDate2=item=>{
+                const cid=deColByBoard2[item.board_id];
+                const raw=cid?deVal2[item.id]:null;
+                if(typeof raw==="string"&&/^\d{4}-\d{2}-\d{2}/.test(raw)){const[y,m,dd]=raw.slice(0,10).split("-").map(Number);return new Date(y,m-1,dd);}
+                return new Date(item.created_at);
+              };
               const inPeriod=item=>{
                 if(filterMode==="all") return true;
-                if(filterMode==="month"&&selMonth){const[y,m]=selMonth.split("-");const s=new Date(parseInt(y),parseInt(m)-1,1);const e=new Date(parseInt(y),parseInt(m),1);const d=new Date(item.created_at);return d>=s&&d<e;}
-                if(filterMode==="range"&&rangeStart&&rangeEnd){const s=new Date(rangeStart);const e=new Date(rangeEnd+"T23:59:59Z");const d=new Date(item.created_at);return d>=s&&d<=e;}
+                if(filterMode==="month"&&selMonth){const[y,m]=selMonth.split("-");const s=new Date(parseInt(y),parseInt(m)-1,1);const e=new Date(parseInt(y),parseInt(m),1);const d=anchorDate2(item);return d>=s&&d<e;}
+                if(filterMode==="range"&&rangeStart&&rangeEnd){const s=new Date(rangeStart);const e=new Date(rangeEnd+"T23:59:59Z");const d=anchorDate2(item);return d>=s&&d<=e;}
                 return false;
               };
               const steps=[
