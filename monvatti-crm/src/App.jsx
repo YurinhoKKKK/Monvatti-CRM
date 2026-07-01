@@ -2907,16 +2907,17 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     await db.from("item_updates").insert(upds.map(u=>({item_id:tgtItemId,content:u.content,created_by:u.created_by})));
   };
 
-  const moveInativa=async(gid,item)=>{
+  // Núcleo do "mover para Base Inativa" — sem toast, reutilizado pelo item único e pelo lote
+  const _moveToInativaCore=async(gid,item)=>{
     const iBoard=boards.find(b=>b.nome==="Base Inativa");
-    if(!iBoard){toast("Board 'Base Inativa' não encontrado","error");return;}
+    if(!iBoard){toast("Board 'Base Inativa' não encontrado","error");return false;}
     const {data:tgs}=await db.from("groups").select("*").eq("board_id",iBoard.id).order("ordem");
     const isTraf=board?.nome==="Tráfego";
     const tg=isTraf?tgs?.find(g=>g.nome==="Tráfego"):tgs?.find(g=>g.nome==="Prospecção Fria")||tgs?.[0];
-    if(!tg){toast("Grupo destino não encontrado","error");return;}
+    if(!tg){toast("Grupo destino não encontrado","error");return false;}
     // Cria novo item no destino
     const {data:newItem}=await db.from("items").insert({board_id:iBoard.id,group_id:tg.id,ordem:9999}).select().single();
-    if(!newItem){toast("Erro ao mover","error");return;}
+    if(!newItem){toast("Erro ao mover","error");return false;}
     // Copia campos equivalentes
     const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",iBoard.id);
     await copyMatchingValues(item.id,board.columns,newItem.id,tgtCols||[]);
@@ -2929,8 +2930,23 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     if(selItem?.id===item.id)setSelItem(null);
     bump(boardId,-1);bump(iBoard.id,1);
     await db.from("items").delete().eq("id",item.id);
-    toast("Movido para Base Inativa (com dados e atualizações)");
     await logAct(currentUser?.id,wsId,"item",item.id,"moved",{to:"Base Inativa"});
+    return true;
+  };
+  const moveInativa=async(gid,item)=>{
+    const ok=await _moveToInativaCore(gid,item);
+    if(ok) toast("Movido para Base Inativa (com dados e atualizações)");
+  };
+  // Move em lote os leads selecionados para a Base Inativa (usado pela barra do checkbox)
+  const bulkMoveInativa=async()=>{
+    const ids=[...selected];
+    const targets=[];
+    board.groups.forEach(g=>(g.items||[]).forEach(it=>{ if(ids.includes(it.id)) targets.push({gid:g.id,item:it}); }));
+    if(!targets.length) return;
+    setSelected(new Set());
+    let ok=0;
+    for(const t of targets){ if(await _moveToInativaCore(t.gid,t.item)) ok++; }
+    toast(`${ok} lead(s) movido(s) para Base Inativa`+(ok<targets.length?` · ${targets.length-ok} com erro`:""), ok?"success":"error");
   };
 
   const dupNeg=async(gid,item)=>{
@@ -3614,10 +3630,12 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
       {moveItemsM&&board&&<MoveItemsModal
         items={getSelectedItems()}
         srcBoard={board}
-        allBoards={perms.slug==="sdr"?(allBoardsRaw||boards).filter(b=>b.nome==="Negociações"):boards}
-        onMove={async(destBid,movedItemIds,destGroup)=>{
-          const cnt=[...selected].length;
+        allBoards={perms.slug==="sdr"?(allBoardsRaw||boards).filter(b=>b.nome==="Negociações"||b.nome==="Base Inativa"):boards}
+        onMove={async(destBid,movedItemIds,destGroup,inativa)=>{
           setMoveItemsM(false);
+          // Destino Base Inativa → move real (remove do quadro de origem), reutilizando bulkMoveInativa
+          if(inativa){ await bulkMoveInativa(); return; }
+          const cnt=[...selected].length;
           // Se destino é Negociações, atualiza badges localmente
           if(movedItemIds?.length){
             setSentToNegIds(prev=>new Set([...prev,...movedItemIds]));
@@ -4000,6 +4018,7 @@ function MoveItemsModal({items,srcBoard,allBoards,onMove,onCancel}) {
 
   const destBoard=allBoards.find(b=>b.id===destBoardId);
   const isNeg=destBoard?.nome==="Negociações";
+  const isInativaDest=destBoard?.nome==="Base Inativa";
   const negParents=destGroups.filter(g=>g.is_parent);
   const negChildren=pid=>destGroups.filter(g=>g.parent_group_id===pid);
   const closerLabel=nome=>(nome||"").replace(/Closer\s*[-\u2013]\s*/i,"").trim();
@@ -4023,6 +4042,8 @@ function MoveItemsModal({items,srcBoard,allBoards,onMove,onCancel}) {
 
   const doMove=async()=>{
     if(!destBoardId||!destGroupId) return;
+    // Base Inativa = inativar: move real (remove do Pré-Vendas). Delega ao BoardView.
+    if(isInativaDest){ onMove(null,null,null,true); return; }
     setMoving(true);
     const {data:destCols}=await db.from("columns").select("*").eq("board_id",destBoardId);
     const matchCols=(srcCols,tgtCols)=>{
@@ -4137,8 +4158,9 @@ function MoveItemsModal({items,srcBoard,allBoards,onMove,onCancel}) {
       </>}>
       <div style={{padding:"12px 14px",background:"var(--surface2)",borderRadius:10,marginBottom:20,
         border:"1px solid var(--border)",fontSize:13,color:"var(--text2)"}}>
-        <strong style={{color:"var(--text)"}}>{items.length} item(s)</strong> serão copiados para o destino.
-        Colunas com o <strong>mesmo nome e tipo</strong> serão preenchidas automaticamente.
+        {isInativaDest
+          ? <><strong style={{color:"var(--text)"}}>{items.length} lead(s)</strong> serão <strong style={{color:"var(--text)"}}>movidos</strong> para a Base Inativa e removidos do quadro atual (com dados, responsáveis e atualizações).</>
+          : <><strong style={{color:"var(--text)"}}>{items.length} item(s)</strong> serão copiados para o destino. Colunas com o <strong>mesmo nome e tipo</strong> serão preenchidas automaticamente.</>}
       </div>
 
       <label style={T.lbl}>Quadro de destino</label>
@@ -4148,8 +4170,11 @@ function MoveItemsModal({items,srcBoard,allBoards,onMove,onCancel}) {
         {otherBoards.map(b=><option key={b.id} value={b.id}>{b.icon||"📋"} {b.nome}</option>)}
       </select>
 
-      {destBoardId&&(
-        <>
+      {destBoardId&&(isInativaDest
+        ? <p style={{fontSize:12.5,color:"var(--text3)",marginTop:4,lineHeight:1.6}}>
+            📁 Os leads selecionados serão movidos para a Base Inativa e <strong style={{color:"var(--text2)"}}>removidos do quadro atual</strong>. O grupo de destino é definido automaticamente.
+          </p>
+        : <>
           <label style={{...T.lbl,marginBottom:10}}>
             {isNeg?"Escolha o Closer e sub-grupo":"Grupo de destino"}
           </label>
