@@ -840,13 +840,13 @@ function CalcCell({values,allColumns}) {
   return <div style={{padding:"5px 8px",fontSize:13,color:r!=null?"#059669":"var(--text3)",fontWeight:r!=null?600:400}}>{r!=null?fmtBRL(r):"—"}</div>;
 }
 
-function Cell({col,values,allColumns,responsibles,allUsers,onChange,onRespChange}) {
+function Cell({col,values,allColumns,responsibles,respByCol,allUsers,onChange,onRespChange}) {
   const v=values?.[col.id];
   const opts=col.config?.options||[];
   switch(col.tipo){
     case "calculated": return <CalcCell values={values} allColumns={allColumns}/>;
     case "status":     return <StatusCell value={v} options={opts} onChange={onChange}/>;
-    case "user":       return <UserCell value={responsibles} allUsers={allUsers} onChange={onRespChange}/>;
+    case "user":       return <UserCell value={respByCol?.[col.id]||[]} allUsers={allUsers} onChange={ids=>onRespChange(col.id,ids)}/>;
     case "currency":   return <CurrencyCell value={v} onChange={onChange}/>;
     case "link":       return <LinkCell value={v} onChange={onChange}/>;
     case "date":       return <EditableCell value={v} onChange={onChange} type="date"/>;
@@ -1712,7 +1712,7 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
         <td key={col.id} style={{padding:"2px 3px",borderRight:"1px solid var(--border)",verticalAlign:"middle",maxWidth:220,overflow:"hidden",
           ...(stickyFirstCols>0&&columns.indexOf(col)<stickyFirstCols?{position:"sticky",left:(52+columns.slice(0,columns.indexOf(col)).reduce((s,_,i)=>s+(colWidths?.[i]||140),0))+"px",background:"var(--surface)",zIndex:2}:{})}}>
           <Cell col={col} values={item.values} allColumns={columns}
-            responsibles={item.responsibles} allUsers={allUsers}
+            responsibles={item.responsibles} respByCol={item.respByCol} allUsers={allUsers}
             onChange={v=>onUpdateValue(col.id,v)} onRespChange={onRespChange}/>
         </td>
       ))}
@@ -2085,7 +2085,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                         onDragOver={e=>onItemDragOver(e,item.id,group.id)}
                         onDrop={e=>onItemDrop(e,item.id,group.id)}
                         onUpdateValue={(cid,v)=>onUpdateValue(item.id,cid,v)}
-                        onRespChange={ids=>onRespChange(item.id,ids)}
+                        onRespChange={(colId,ids)=>onRespChange(item.id,colId,ids)}
                         sentToNegIds={sentToNegIds}
                         stickyFirstCols={stickyFirstCols}
                         colWidths={colWidths}
@@ -2198,7 +2198,7 @@ function ItemPanel({item,board,allUsers,currentUser,onClose,onUpdateValue,onResp
                 <div style={{width:130,fontSize:12,color:"var(--text3)",flexShrink:0,paddingTop:7,fontWeight:600,lineHeight:1.4}}>{col.nome}</div>
                 <div style={{flex:1,minWidth:0}}>
                   <Cell col={col} values={item.values} allColumns={board.columns}
-                    responsibles={item.responsibles} allUsers={allUsers}
+                    responsibles={item.responsibles} respByCol={item.respByCol} allUsers={allUsers}
                     onChange={v=>onUpdateValue(col.id,v)} onRespChange={onRespChange}/>
                 </div>
               </div>
@@ -2424,7 +2424,7 @@ function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedIt
               onToggle={()=>toggleSg(sg.id)}
               onOpenItem={item=>onOpenItem(item,sg.id)}
               onUpdateValue={(iid,cid,v)=>onUpdateValue(iid,sg.id,cid,v)}
-              onRespChange={(iid,ids)=>onRespChange(iid,sg.id,ids)}
+              onRespChange={(iid,colId,ids)=>onRespChange(iid,sg.id,colId,ids)}
               onDelItem={iid=>onDelItem(sg.id,iid)}
               onMoveInativa={onMoveInativa?item=>onMoveInativa(sg.id,item):null}
               onDupNeg={onDupNeg?item=>onDupNeg(sg.id,item):null}
@@ -2610,7 +2610,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
       db.from("items").select("id,group_id,ordem,created_at").eq("board_id",bid).order("ordem"),
     ]);
     const ids=(itens||[]).map(i=>i.id);
-    let vMap={},rMap={};
+    let vMap={},rMap={},rColMap={};
     if(ids.length){
       // Busca em chunks de 100 IDs para evitar o corte silencioso do Supabase (default 1000 linhas).
       // limit(50000) garante que nenhum chunk seja truncado independentemente do crescimento do CRM.
@@ -2624,7 +2624,14 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
       const vals=valsArr.flatMap(r=>r.data||[]);
       const resps=respsArr.flatMap(r=>r.data||[]);
       for(const v of vals){if(!vMap[v.item_id])vMap[v.item_id]={};vMap[v.item_id][v.column_id]=v.value;}
-      for(const r of resps){if(!rMap[r.item_id])rMap[r.item_id]=[];rMap[r.item_id].push(r.user_id);}
+      for(const r of resps){
+        if(!rMap[r.item_id])rMap[r.item_id]=[];rMap[r.item_id].push(r.user_id);
+        if(r.column_id){
+          if(!rColMap[r.item_id])rColMap[r.item_id]={};
+          if(!rColMap[r.item_id][r.column_id])rColMap[r.item_id][r.column_id]=[];
+          rColMap[r.item_id][r.column_id].push(r.user_id);
+        }
+      }
     }
     // Carrega group_access para todos os grupos do board
     const gids=(grps||[]).map(g=>g.id);
@@ -2640,7 +2647,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     const columns=(cols||[]).map(c=>({...c,config:typeof c.config==="string"?JSON.parse(c.config):(c.config||{})}));
     const groups=(grps||[]).map(g=>({
       ...g,
-      items:(itens||[]).filter(i=>i.group_id===g.id).map(i=>({...i,values:vMap[i.id]||{},responsibles:rMap[i.id]||[],updates:[]}))
+      items:(itens||[]).filter(i=>i.group_id===g.id).map(i=>({...i,values:vMap[i.id]||{},responsibles:rMap[i.id]||[],respByCol:rColMap[i.id]||{},updates:[]}))
     }));
     setBoard({...bData,columns,groups});
 
@@ -2668,13 +2675,14 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
   const addItem=async gid=>{
     const {data,error}=await db.from("items").insert({board_id:boardId,group_id:gid,ordem:9999}).select().single();
     if(error){toast("Erro ao criar item","error");return;}
-    // Auto-preenche responsável com o owner do grupo
+    // Auto-preenche responsável (owner do grupo) na PRIMEIRA coluna de responsável do board
     const group=board?.groups.find(g=>g.id===gid);
     const ownerIds=group?.owner_id?[group.owner_id]:[];
-    if(ownerIds.length){
-      await db.from("item_responsables").insert(ownerIds.map(uid=>({item_id:data.id,user_id:uid})));
+    const primaryUserCol=(board?.columns||[]).filter(c=>c.tipo==="user").sort((a,b)=>(a.ordem||0)-(b.ordem||0))[0];
+    if(ownerIds.length&&primaryUserCol){
+      await db.from("item_responsables").insert(ownerIds.map(uid=>({item_id:data.id,user_id:uid,column_id:primaryUserCol.id})));
     }
-    upd(b=>{b.groups.find(g=>g.id===gid)?.items.push({...data,values:{},responsibles:ownerIds,updates:[]});});
+    upd(b=>{b.groups.find(g=>g.id===gid)?.items.push({...data,values:{},responsibles:ownerIds,respByCol:primaryUserCol&&ownerIds.length?{[primaryUserCol.id]:ownerIds}:{},updates:[]});});
     bump(boardId,1);
   };
 
@@ -2684,11 +2692,12 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     await db.from("item_values").upsert({item_id:iid,column_id:cid,value:val},{onConflict:"item_id,column_id"});
   };
 
-  const updateResp=async(iid,gid,ids)=>{
-    upd(b=>{const item=b.groups.find(g=>g.id===gid)?.items.find(i=>i.id===iid);if(item)item.responsibles=ids;});
-    if(selItem?.id===iid)setSelItem(p=>({...p,responsibles:ids}));
-    await db.from("item_responsables").delete().eq("item_id",iid);
-    if(ids.length)await db.from("item_responsables").insert(ids.map(uid=>({item_id:iid,user_id:uid})));
+  const updateResp=async(iid,gid,colId,ids)=>{
+    upd(b=>{const item=b.groups.find(g=>g.id===gid)?.items.find(i=>i.id===iid);if(item){if(!item.respByCol)item.respByCol={};item.respByCol[colId]=ids;item.responsibles=Object.values(item.respByCol).flat();}});
+    if(selItem?.id===iid)setSelItem(p=>{const rc={...(p.respByCol||{}),[colId]:ids};return{...p,respByCol:rc,responsibles:Object.values(rc).flat()};});
+    // Escopo por coluna: apaga/insere APENAS os responsáveis desta coluna (column_id)
+    await db.from("item_responsables").delete().eq("item_id",iid).eq("column_id",colId);
+    if(ids.length)await db.from("item_responsables").insert(ids.map(uid=>({item_id:iid,user_id:uid,column_id:colId})));
   };
 
   const delItem=async(gid,iid)=>{
@@ -2901,6 +2910,23 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     if(toInsert.length) await db.from("item_values").insert(toInsert);
   };
 
+  // Transporta responsáveis para a coluna "gêmea" (mesmo nome e tipo 'user') do destino.
+  // Espelha copyMatchingValues. Linhas legacy (column_id null) são ignoradas no transporte.
+  const copyMatchingResponsables=async(srcItemId,srcCols,tgtItemId,tgtCols)=>{
+    const {data:resps}=await db.from("item_responsables").select("*").eq("item_id",srcItemId);
+    if(!resps?.length) return;
+    const tgtByName=Object.fromEntries(tgtCols.filter(c=>c.tipo==="user").map(c=>[c.nome.toLowerCase().trim(),c.id]));
+    const toInsert=[];
+    for(const r of resps){
+      if(!r.column_id) continue;
+      const srcCol=srcCols.find(c=>c.id===r.column_id);
+      if(!srcCol) continue;
+      const tgtId=tgtByName[srcCol.nome.toLowerCase().trim()];
+      if(tgtId) toInsert.push({item_id:tgtItemId,user_id:r.user_id,column_id:tgtId});
+    }
+    if(toInsert.length) await db.from("item_responsables").insert(toInsert);
+  };
+
   const copyUpdates=async(srcItemId,tgtItemId)=>{
     const {data:upds}=await db.from("item_updates").select("*").eq("item_id",srcItemId).order("created_at");
     if(!upds?.length) return;
@@ -2922,7 +2948,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",iBoard.id);
     await copyMatchingValues(item.id,board.columns,newItem.id,tgtCols||[]);
     // Copia responsáveis
-    if(item.responsibles?.length) await db.from("item_responsables").insert(item.responsibles.map(uid=>({item_id:newItem.id,user_id:uid})));
+    await copyMatchingResponsables(item.id,board.columns,newItem.id,tgtCols||[]);
     // Copia atualizações
     await copyUpdates(item.id,newItem.id);
     // Exclui original
@@ -2962,7 +2988,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
         const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",nBoard.id);
         await copyMatchingValues(item.id,board.columns,ni.id,tgtCols||[]);
         // Responsáveis
-        if(item.responsibles?.length) await db.from("item_responsables").insert(item.responsibles.map(uid=>({item_id:ni.id,user_id:uid})));
+        await copyMatchingResponsables(item.id,board.columns,ni.id,tgtCols||[]);
         // Atualizações
         await copyUpdates(item.id,ni.id);
         bump(nBoard.id,1);
@@ -2989,7 +3015,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
         if(!ni){toast("Erro ao criar item","error");return;}
         const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",negBoard.id);
         await copyMatchingValues(item.id,board.columns,ni.id,tgtCols||[]);
-        if(item.responsibles?.length) await db.from("item_responsables").insert(item.responsibles.map(uid=>({item_id:ni.id,user_id:uid})));
+        await copyMatchingResponsables(item.id,board.columns,ni.id,tgtCols||[]);
         await copyUpdates(item.id,ni.id);
         bump(negBoard.id,1);
         await logAct(currentUser?.id,wsId,"item",ni.id,"created",{via:"sendToNeg",from:item.id});
@@ -3025,7 +3051,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
         if(!ni){toast("Erro ao criar item em Vendas","error");setGroupSelM(null);return;}
         const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",vendasBoard.id);
         await copyMatchingValues(item.id,board.columns,ni.id,tgtCols||[]);
-        if(item.responsibles?.length) await db.from("item_responsables").insert(item.responsibles.map(uid=>({item_id:ni.id,user_id:uid})));
+        await copyMatchingResponsables(item.id,board.columns,ni.id,tgtCols||[]);
         await copyUpdates(item.id,ni.id);
         bump(vendasBoard.id,1);
         toast("🏆 Lead enviado para Vendas!");
@@ -3503,7 +3529,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
                 onDelItem={(gid,iid)=>setConfirmM({title:"Excluir item",danger:true,message:"Excluir permanentemente?",onConfirm:()=>{delItem(gid,iid);setConfirmM(null);}})}
                 onOpenItem={(item,gid)=>loadUpdates(item,gid)}
                 onUpdateValue={(iid,gid,cid,v)=>updateValue(iid,gid,cid,v)}
-                onRespChange={(iid,gid,ids)=>updateResp(iid,gid,ids)}
+                onRespChange={(iid,gid,colId,ids)=>updateResp(iid,gid,colId,ids)}
                 onMoveInativa={canActions?(gid,item)=>moveInativa(gid,item):null}
                 onDupNeg={null}
                 onSendToNeg={isPreVendas?(gid,item)=>sendToNeg(gid,item):null}
@@ -3531,7 +3557,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
                 onRenameGroup={n=>renameGroup(group.id,n)} onToggle={()=>toggleGroup(group.id)}
                 onOpenItem={item=>loadUpdates(item,group.id)}
                 onUpdateValue={(iid,cid,v)=>updateValue(iid,group.id,cid,v)}
-                onRespChange={(iid,ids)=>updateResp(iid,group.id,ids)}
+                onRespChange={(iid,colId,ids)=>updateResp(iid,group.id,colId,ids)}
                 onDelItem={iid=>setConfirmM({title:"Excluir item",danger:true,message:"Excluir permanentemente?",onConfirm:()=>{delItem(group.id,iid);setConfirmM(null);}})}
                 onMoveInativa={canActions?item=>moveInativa(group.id,item):null}
                 onDupNeg={null}
@@ -3569,7 +3595,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
         <ItemPanel item={selItem} board={board} allUsers={allUsers} currentUser={currentUser}
           onClose={()=>setSelItem(null)}
           onUpdateValue={(cid,v)=>updateValue(selItem.id,selItem._gid,cid,v)}
-          onRespChange={ids=>updateResp(selItem.id,selItem._gid,ids)}
+          onRespChange={(colId,ids)=>updateResp(selItem.id,selItem._gid,colId,ids)}
           onAddUpdate={html=>addUpdate(selItem.id,selItem._gid,html)}
           onDelUpdate={uid=>delUpdate(uid)}
         />
@@ -4080,8 +4106,14 @@ function MoveItemsModal({items,srcBoard,allBoards,onMove,onCancel}) {
         if(tgtId) toInsert.push({item_id:ni.id,column_id:tgtId,value:v.value});
       }
       if(toInsert.length) await db.from("item_values").insert(toInsert);
-      if(item.responsibles?.length)
-        await db.from("item_responsables").insert(item.responsibles.map(uid=>({item_id:ni.id,user_id:uid})));
+      // Responsáveis → coluna gêmea (mesmo nome e tipo) via colMap; ignora legacy (column_id null)
+      const {data:srcResps}=await db.from("item_responsables").select("*").eq("item_id",item.id);
+      const respIns=[];
+      for(const r of srcResps||[]){
+        const tgtCid=r.column_id?colMap[r.column_id]:null;
+        if(tgtCid) respIns.push({item_id:ni.id,user_id:r.user_id,column_id:tgtCid});
+      }
+      if(respIns.length) await db.from("item_responsables").insert(respIns);
       const {data:upds}=await db.from("item_updates").select("*").eq("item_id",item.id);
       if(upds?.length)
         await db.from("item_updates").insert(upds.map(u=>({item_id:ni.id,content:u.content,created_by:u.created_by})));
