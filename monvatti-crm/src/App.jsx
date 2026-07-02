@@ -2624,12 +2624,20 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
       const vals=valsArr.flatMap(r=>r.data||[]);
       const resps=respsArr.flatMap(r=>r.data||[]);
       for(const v of vals){if(!vMap[v.item_id])vMap[v.item_id]={};vMap[v.item_id][v.column_id]=v.value;}
+      // Colunas de responsável deste board (ordenadas); a primeira é a "primária" (ex.: Closer)
+      const userColIds=(cols||[]).filter(c=>c.tipo==="user").sort((a,b)=>(a.ordem||0)-(b.ordem||0)).map(c=>c.id);
+      const validUserCol=new Set(userColIds);
+      const primaryUserColId=userColIds[0]||null;
       for(const r of resps){
-        if(!rMap[r.item_id])rMap[r.item_id]=[];rMap[r.item_id].push(r.user_id);
-        if(r.column_id){
+        if(!rMap[r.item_id])rMap[r.item_id]=[];
+        if(!rMap[r.item_id].includes(r.user_id))rMap[r.item_id].push(r.user_id);
+        // Coluna efetiva: a do registro, se for uma coluna de responsável válida deste board;
+        // senão (legado: column_id nulo/inválido) → coluna primária, para NÃO sumir da tela.
+        const eff=(r.column_id&&validUserCol.has(r.column_id))?r.column_id:primaryUserColId;
+        if(eff){
           if(!rColMap[r.item_id])rColMap[r.item_id]={};
-          if(!rColMap[r.item_id][r.column_id])rColMap[r.item_id][r.column_id]=[];
-          rColMap[r.item_id][r.column_id].push(r.user_id);
+          if(!rColMap[r.item_id][eff])rColMap[r.item_id][eff]=[];
+          if(!rColMap[r.item_id][eff].includes(r.user_id))rColMap[r.item_id][eff].push(r.user_id);
         }
       }
     }
@@ -2697,7 +2705,18 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     if(selItem?.id===iid)setSelItem(p=>{const rc={...(p.respByCol||{}),[colId]:ids};return{...p,respByCol:rc,responsibles:Object.values(rc).flat()};});
     // Escopo por coluna: apaga/insere APENAS os responsáveis desta coluna (column_id)
     await db.from("item_responsables").delete().eq("item_id",iid).eq("column_id",colId);
-    if(ids.length)await db.from("item_responsables").insert(ids.map(uid=>({item_id:iid,user_id:uid,column_id:colId})));
+    // Se esta é a coluna primária (onde o legado sem column_id é exibido), limpa o legado
+    // nulo também — assim remoções persistem e não geram duplicação após o refresh.
+    const userCols=(board?.columns||[]).filter(c=>c.tipo==="user").sort((a,b)=>(a.ordem||0)-(b.ordem||0));
+    if(userCols[0]?.id===colId) await db.from("item_responsables").delete().eq("item_id",iid).is("column_id",null);
+    if(ids.length){
+      const {error}=await db.from("item_responsables").insert(ids.map(uid=>({item_id:iid,user_id:uid,column_id:colId})));
+      if(error){
+        // Não falha em silêncio: avisa e recarrega para refletir o estado real do banco
+        toast("Não foi possível salvar o responsável: "+(error.message||"erro"),"error");
+        loadBoard(boardId);
+      }
+    }
   };
 
   const delItem=async(gid,iid)=>{
