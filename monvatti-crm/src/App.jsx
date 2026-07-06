@@ -52,9 +52,9 @@ const sendWhatsApp = async (text) => {
   return { ok: enviados.length > 0, sent: enviados.length, total: ativos.length, enviados };
 };
 
-import * as XLSX from "https://esm.sh/xlsx@0.18.5";
-import { jsPDF } from "https://esm.sh/jspdf@2.5.1";
-import autoTable from "https://esm.sh/jspdf-autotable@3.8.3";
+import * as XLSX_MOD from "https://esm.sh/xlsx-js-style@1.2.0";
+// esm.sh pode expor o pacote como named exports OU sob .default — resolve o objeto que tem .utils
+const XLSX = (XLSX_MOD && XLSX_MOD.utils) ? XLSX_MOD : (XLSX_MOD?.default || XLSX_MOD);
 
 // ─── SUPABASE ────────────────────────────────────────────────────────────────
 const SUPA_URL = "https://hyhealogmqylciuzdmkz.supabase.co";
@@ -1299,9 +1299,9 @@ function ColumnManagerModal({board,onClose,onRefresh,toast}) {
 // ─────────────────────────────────────────────────────────────────────────────
 // EXPORT MODAL — XLSX + PDF com cores da marca
 // ─────────────────────────────────────────────────────────────────────────────
-function ExportModal({board,onClose}) {
+function ExportModal({board,allUsers=[],onClose}) {
   const [busy,setBusy]=useState(false);
-  const [selCols,setSelCols]=useState(()=>new Set(board.columns.filter(c=>c.tipo!=="user").map(c=>c.id)));
+  const [selCols,setSelCols]=useState(()=>new Set(board.columns.map(c=>c.id)));
   const toast=useToast();
   const date=new Date().toLocaleDateString("pt-BR").replace(/\//g,"-");
   const dateStr=new Date().toLocaleString("pt-BR");
@@ -1333,7 +1333,10 @@ function ExportModal({board,onClose}) {
   };
 
   const getCellVal=(item,col)=>{
-    if(col.tipo==="user") return "";
+    if(col.tipo==="user"){
+      const ids=item.respByCol?.[col.id]||[];
+      return ids.map(uid=>{const u=allUsers.find(x=>x.id===uid);return u?.nome||"";}).filter(Boolean).join(", ");
+    }
     if(col.tipo==="calculated"){
       const cC=board.columns.find(c=>c.tipo==="currency");
       const pC=board.columns.find(c=>c.tipo==="number"&&c.nome.toLowerCase().includes("parcela"));
@@ -1482,116 +1485,6 @@ function ExportModal({board,onClose}) {
     setBusy(false);
   };
 
-  const exportPDF=()=>{
-    setBusy(true);
-    try{
-      const pdfCols=visibleCols.filter(c=>c.tipo!=="user");
-      const isLandscape=pdfCols.length>5;
-      const doc=new jsPDF({orientation:isLandscape?"landscape":"portrait",unit:"mm",format:"a4"});
-      const pageW=doc.internal.pageSize.getWidth();
-      const pageH=doc.internal.pageSize.getHeight();
-      const totalLeads=flatGroups.reduce((s,g)=>s+(g.items||[]).length,0);
-
-      // ── Cabeçalho ─────────────────────────────────────────────────────────
-      doc.setFillColor(15,23,42);
-      doc.rect(0,0,pageW,26,"F");
-      doc.setFont("helvetica","bold");
-      doc.setFontSize(14);
-      doc.setTextColor(255,255,255);
-      doc.text((board.icon?board.icon+" ":"")+board.nome,12,12);
-      doc.setFont("helvetica","normal");
-      doc.setFontSize(8);
-      doc.setTextColor(148,163,184);
-      doc.text("Monvatti CRM  •  "+dateStr+"  •  "+totalLeads+" lead(s)  •  "+flatGroups.length+" grupo(s)",12,20);
-      doc.setDrawColor(49,69,255);
-      doc.setLineWidth(0.7);
-      doc.line(0,26,pageW,26);
-
-      const hexRGB=h=>{
-        const hx=(h||"#4F46E5").replace("#","");
-        return [parseInt(hx.slice(0,2),16)||79,parseInt(hx.slice(2,4),16)||70,parseInt(hx.slice(4,6),16)||229];
-      };
-      const lightRGB=([r,g,b])=>[Math.round(r*0.18+255*0.82),Math.round(g*0.18+255*0.82),Math.round(b*0.18+255*0.82)];
-
-      // ── Tabela ─────────────────────────────────────────────────────────────
-      const body=[];
-      flatGroups.forEach(g=>{
-        const [r,gn,b2]=hexRGB(g.color||"#4F46E5");
-        const parentLabel=g._parentNome?" — "+g._parentNome:"";
-        body.push([{
-          content:(g.nome+parentLabel).toUpperCase()+"   ("+((g.items||[]).length)+" leads)",
-          colSpan:pdfCols.length,
-          styles:{fontStyle:"bold",fontSize:8,fillColor:[r,gn,b2],textColor:[255,255,255],
-            cellPadding:{top:4,bottom:4,left:6,right:6},halign:"left"}
-        }]);
-        const subtotals=pdfCols.map(()=>0);
-        (g.items||[]).forEach((item,idx)=>{
-          const rowBg=idx%2===0?[255,255,255]:[241,245,249];
-          body.push(pdfCols.map((col,ci)=>{
-            const v=getCellVal(item,col);
-            const isNum=col.tipo==="currency"||col.tipo==="calculated"||col.tipo==="number";
-            const isMoney=col.tipo==="currency"||col.tipo==="calculated"; if(isMoney&&v) subtotals[ci]=(subtotals[ci]||0)+(parseFloat(v)||0);
-            const display=col.tipo==="currency"||col.tipo==="calculated"?fmtBRL(parseFloat(v)||0):String(v||"");
-            if(col.tipo==="status"&&v){
-              const sColor=getStatusColor(col,String(v));
-              if(sColor){
-                const [sr,sg2,sb]=hexRGB(sColor);
-                const [lr,lg,lb]=lightRGB([sr,sg2,sb]);
-                return {content:String(v),styles:{halign:"center",fontSize:7,fontStyle:"bold",
-                  fillColor:[lr,lg,lb],textColor:[sr,sg2,sb],
-                  cellPadding:{top:3,bottom:3,left:4,right:4}}};
-              }
-            }
-            return {content:v!=null&&v!==""?display:"—",styles:{
-              halign:isNum?"right":"left",fontSize:7.5,
-              fillColor:rowBg,textColor:[30,41,59],
-              cellPadding:{top:3.5,bottom:3.5,left:5,right:5}}};
-          }));
-        });
-        const hasMoney=pdfCols.some(c=>c.tipo==="currency"||c.tipo==="calculated");
-        if(hasMoney){
-          body.push(pdfCols.map((col,ci)=>{
-            const isMoney2=col.tipo==="currency"||col.tipo==="calculated"; return {content:ci===0?"SUBTOTAL":isMoney2?fmtBRL(subtotals[ci]):"",
-              styles:{fontStyle:"bold",fontSize:7.5,fillColor:[15,71,44],textColor:[255,255,255],
-                halign:isMoney2?"right":"left",cellPadding:{top:3,bottom:3,left:6,right:6}}};
-          }));
-        }
-        body.push([{content:"",colSpan:pdfCols.length,styles:{fillColor:[255,255,255],cellPadding:{top:1.5,bottom:1.5,left:0,right:0}}}]);
-      });
-
-      autoTable(doc,{
-        head:[pdfCols.map(c=>c.nome)],
-        body,
-        startY:29,
-        headStyles:{fillColor:[30,41,59],textColor:[255,255,255],fontStyle:"bold",fontSize:8,
-          cellPadding:{top:5,bottom:5,left:5,right:5}},
-        bodyStyles:{fontSize:7.5,textColor:[30,41,59],cellPadding:{top:3.5,bottom:3.5,left:5,right:5}},
-        tableLineColor:[203,213,225],
-        tableLineWidth:0.2,
-        margin:{left:8,right:8,top:29},
-        columnStyles:Object.fromEntries(pdfCols.map((c,i)=>[i,{
-          halign:c.tipo==="currency"||c.tipo==="calculated"||c.tipo==="number"?"right":"left",
-          minCellWidth:c.tipo==="currency"||c.tipo==="calculated"?24:c.tipo==="date"?18:c.tipo==="status"?20:undefined,
-        }])),
-        didDrawPage:()=>{
-          const pg=doc.internal.getCurrentPageInfo().pageNumber;
-          const total=doc.internal.getNumberOfPages();
-          doc.setFillColor(15,23,42);
-          doc.rect(0,pageH-10,pageW,10,"F");
-          doc.setFont("helvetica","normal");
-          doc.setFontSize(7);
-          doc.setTextColor(148,163,184);
-          doc.text("Monvatti CRM — "+board.nome,8,pageH-3.5);
-          doc.text("Pág. "+pg+" / "+total,pageW-8,pageH-3.5,{align:"right"});
-        },
-      });
-
-      doc.save(board.nome.replace(/\s+/g,"_")+"_"+date+".pdf");
-      toast("PDF exportado com sucesso!");
-    }catch(e){toast("Erro ao exportar PDF","error");console.error(e);}
-    setBusy(false);
-  };
-
   return (
     <Modal title={"📤 Exportar — "+board.nome} onClose={onClose} width={520}>
       <div style={{marginBottom:20}}>
@@ -1599,7 +1492,7 @@ function ExportModal({board,onClose}) {
           Colunas a exportar
         </div>
         <div style={{display:"flex",flexWrap:"wrap",gap:7}}>
-          {board.columns.filter(c=>c.tipo!=="user").map(col=>{
+          {board.columns.map(col=>{
             const on=selCols.has(col.id);
             return (
               <button key={col.id} onClick={()=>setSelCols(prev=>{const n=new Set(prev);on?n.delete(col.id):n.add(col.id);return n;})}
@@ -1626,17 +1519,6 @@ function ExportModal({board,onClose}) {
             <div style={{fontWeight:700,fontSize:14}}>Exportar Excel (.xlsx)</div>
             <div style={{fontSize:11,opacity:.85,fontWeight:400,marginTop:2}}>
               2 abas: Resumo por grupo + dados detalhados com cores de status e subtotais
-            </div>
-          </div>
-        </button>
-        <button onClick={exportPDF} disabled={busy||selCols.size===0}
-          style={{...T.btn,background:"#dc2626",color:"#fff",padding:"14px 18px",
-            justifyContent:"flex-start",gap:14,width:"100%",opacity:selCols.size===0?.5:1}}>
-          <div style={{fontSize:26,lineHeight:1,flexShrink:0}}>📄</div>
-          <div style={{textAlign:"left"}}>
-            <div style={{fontWeight:700,fontSize:14}}>Exportar PDF</div>
-            <div style={{fontSize:11,opacity:.85,fontWeight:400,marginTop:2}}>
-              Relatório formatado com cores dos grupos, status coloridos e subtotais
             </div>
           </div>
         </button>
@@ -3621,7 +3503,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
       )}
       {showFilters&&<FilterPanel board={board} allUsers={allUsers} filters={filters} setFilters={setFilters} onClose={()=>setShowFilters(false)}/>}
       {showColMgr&&<ColumnManagerModal board={board} toast={toast} onClose={()=>setShowColMgr(false)} onRefresh={()=>loadBoard(boardId)}/>}
-      {showExport&&<ExportModal board={{...board,groups:visibleGroups}} onClose={()=>setShowExport(false)}/>}
+      {showExport&&<ExportModal board={{...board,groups:visibleGroups}} allUsers={allUsers} onClose={()=>setShowExport(false)}/>}
       {parentGroupM!==null&&(
         <ParentGroupModal
           initial={parentGroupM?.id?parentGroupM:null}
