@@ -1547,7 +1547,7 @@ function ItemMenuOpt({icon,label,onClick,danger=false}) {
 
 function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,
   onDragStart,onDragOver,onDrop,onUpdateValue,onRespChange,sentToNegIds=new Set(),stickyFirstCols=0,colWidths=null,
-  siblingStages=null,onMoveStage=null}) {
+  siblingStages=null,onMoveStage=null,sentLabel="Negociações"}) {
   const [hov,setHov]=useState(false);
   const [menu,setMenu]=useState(false);
   const [menuPos,setMenuPos]=useState({top:0,right:0});
@@ -1579,10 +1579,10 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
         position:"sticky",left:0,zIndex:3,background:"var(--surface)",
         boxShadow:"2px 0 0 var(--border)"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:5,position:"relative"}}>
-          <button onClick={onOpen} title={alreadySent?"Atualizações (já enviado para Negociações)":"Atualizações"}
+          <button onClick={onOpen} title={alreadySent?`Atualizações (já enviado para ${sentLabel})`:"Atualizações"}
             style={{...T.iBtn,opacity:hov||selected?1:0.25,transition:"opacity .15s",fontSize:13,padding:"2px 3px",flexShrink:0,position:"relative"}}>
             📝
-            {alreadySent&&<span title="Lead enviado para Negociações" style={{position:"absolute",top:-4,right:-4,width:10,height:10,
+            {alreadySent&&<span title={`Lead enviado para ${sentLabel}`} style={{position:"absolute",top:-4,right:-4,width:10,height:10,
               borderRadius:"50%",background:"#00C46A",border:"2px solid var(--surface)",
               display:"block",boxShadow:"0 0 6px #00C46A90"}}/>}
           </button>
@@ -1613,7 +1613,11 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
                 ? <ItemMenuOpt icon="🔁" label="Reenviar para Negociações" onClick={()=>{setMenu(false);onSendToNeg();}}/>
                 : <ItemMenuOpt icon="🤝" label="Enviar para Negociações" onClick={()=>{setMenu(false);onSendToNeg();}}/>
             )}
-            {onSendToVendas&&<ItemMenuOpt icon="🏆" label="Enviar para Vendas" onClick={()=>{setMenu(false);onSendToVendas();}}/>}
+            {onSendToVendas&&(
+              alreadySent
+                ? <ItemMenuOpt icon="🔁" label="Reenviar para Vendas" onClick={()=>{setMenu(false);onSendToVendas();}}/>
+                : <ItemMenuOpt icon="🏆" label="Enviar para Vendas" onClick={()=>{setMenu(false);onSendToVendas();}}/>
+            )}
             {siblingStages&&siblingStages.length>0&&<>
               <div style={{height:1,background:"var(--border)",margin:"5px 0"}}/>
               <div style={{padding:"3px 13px 4px",fontSize:10.5,fontWeight:700,color:"var(--text3)",textTransform:"uppercase",letterSpacing:.5}}>Mover para</div>
@@ -1739,7 +1743,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
   perms,currentUser,groupAccess,
   onToggleItem,onSelectAll,onAddItem,onDelGroup,onRenameGroup,onToggle,
   onOpenItem,onUpdateValue,onRespChange,onDelItem,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,
-  onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,sentToNegIds=new Set(),
+  onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,sentToNegIds=new Set(),sentLabel="Negociações",
   sortCfg={colId:null,dir:1},setSortCfg=()=>{},stickyFirstCols=0,siblingStages=null,onMoveStage=null}) {
   const [renaming,setRenaming]=useState(false);
   const [gname,setGname]=useState(group.nome);
@@ -1968,7 +1972,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                         onDrop={e=>onItemDrop(e,item.id,group.id)}
                         onUpdateValue={(cid,v)=>onUpdateValue(item.id,cid,v)}
                         onRespChange={(colId,ids)=>onRespChange(item.id,colId,ids)}
-                        sentToNegIds={sentToNegIds}
+                        sentToNegIds={sentToNegIds} sentLabel={sentLabel}
                         stickyFirstCols={stickyFirstCols}
                         colWidths={colWidths}
                         siblingStages={siblingStages}
@@ -2233,7 +2237,7 @@ function FilterPanel({board,allUsers,filters,setFilters,onClose}) {
 function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedItems,isMobile,
   perms,currentUser,groupAccess,canManageParent,
   onToggleItem,onSelectAll,onAddItem,onDelItem,onOpenItem,
-  onUpdateValue,onRespChange,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,sentToNegIds=new Set(),
+  onUpdateValue,onRespChange,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,sentToNegIds=new Set(),sentLabel="Negociações",
   sortCfg={colId:null,dir:1},setSortCfg=()=>{},
   onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,
   onRenameSubGroup,onDelSubGroup,onEditParent,onDelParent,onMoveStage}) {
@@ -2312,7 +2316,7 @@ function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedIt
               onDupNeg={onDupNeg?item=>onDupNeg(sg.id,item):null}
               onSendToNeg={onSendToNeg?item=>onSendToNeg(sg.id,item):null}
               onSendToVendas={onSendToVendas?item=>onSendToVendas(sg.id,item):null}
-              sentToNegIds={sentToNegIds}
+              sentToNegIds={sentToNegIds} sentLabel={sentLabel}
               sortCfg={sortCfg} setSortCfg={setSortCfg}
               onDragStart={onDragStart} onDragOver={e=>onDragOver(e,sg.id)} onDrop={e=>onDrop(e,sg.id)}
               onItemDragOver={onItemDragOver} onItemDrop={onItemDrop}
@@ -2541,14 +2545,21 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     }));
     setBoard({...bData,columns,groups});
 
-    // Detecta quais itens do Pré-Vendas já foram enviados para Negociações
-    // via origin_item_id — vínculo estrutural permanente, imune a edições de campos
-    if(bData?.nome==="Pré - Vendas"&&ids.length){
-      const {data:linked}=await db.from("items")
-        .select("origin_item_id")
-        .in("origin_item_id",ids)
-        .not("origin_item_id","is",null);
-      setSentToNegIds(new Set((linked||[]).map(r=>r.origin_item_id)));
+    // Detecta quais itens já foram encaminhados para o próximo quadro do funil,
+    // via origin_item_id — vínculo estrutural permanente, imune a edições de campos.
+    // Pré-Vendas → Negociações   |   Negociações → Vendas
+    const nextBoardName = bData?.nome==="Pré - Vendas" ? "Negociações"
+                        : bData?.nome==="Negociações"  ? "Vendas" : null;
+    if(nextBoardName&&ids.length){
+      const {data:nb}=await db.from("boards").select("id").eq("nome",nextBoardName).maybeSingle();
+      if(nb?.id){
+        const {data:linked}=await db.from("items")
+          .select("origin_item_id")
+          .eq("board_id",nb.id)
+          .in("origin_item_id",ids)
+          .not("origin_item_id","is",null);
+        setSentToNegIds(new Set((linked||[]).map(r=>r.origin_item_id)));
+      }else setSentToNegIds(new Set());
     }else{
       setSentToNegIds(new Set());
     }
@@ -2948,13 +2959,14 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     if(!vgs?.length){toast("Nenhum grupo em Vendas","error");return;}
     setGroupSelM({title:"📌 Enviar para Vendas — escolha o grupo",groups:vgs,
       onSelect:async tg=>{
-        const {data:ni}=await db.from("items").insert({board_id:vendasBoard.id,group_id:tg.id,ordem:9999}).select().single();
+        const {data:ni}=await db.from("items").insert({board_id:vendasBoard.id,group_id:tg.id,ordem:9999,origin_item_id:item.id}).select().single();
         if(!ni){toast("Erro ao criar item em Vendas","error");setGroupSelM(null);return;}
         const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",vendasBoard.id);
         await copyMatchingValues(item.id,board.columns,ni.id,tgtCols||[]);
         await copyMatchingResponsables(item.id,board.columns,ni.id,tgtCols||[]);
         await copyUpdates(item.id,ni.id);
         bump(vendasBoard.id,1);
+        setSentToNegIds(prev=>new Set([...prev,item.id]));
         toast("🏆 Lead enviado para Vendas!");
         setGroupSelM(null);
         await logAct(currentUser?.id,wsId,"item",ni.id,"created",{via:"sendToVendas",from:item.id});
@@ -3257,6 +3269,8 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
   // Botões contextuais por quadro
   const isPreVendas      = board?.nome==="Pré - Vendas";     // botão → Negociações (todos)
   const isNegociacoes    = board?.nome==="Negociações";       // botão → Vendas (sendToVendas)
+  // Rótulo do pin verde: indica para qual quadro o lead já foi encaminhado
+  const sentLabel        = isNegociacoes ? "Vendas" : "Negociações";
   const isVendas         = board?.nome==="Vendas";            // filtro de período
   const canActions       = isPreVendas;                       // mover inativa habilitado no Pré-Vendas
 
@@ -3435,7 +3449,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
                 onDupNeg={null}
                 onSendToNeg={isPreVendas?(gid,item)=>sendToNeg(gid,item):null}
                 onSendToVendas={isNegociacoes&&perms.sendToVendas?(gid,item)=>sendToVendas(gid,item):null}
-                sentToNegIds={sentToNegIds}
+                sentToNegIds={sentToNegIds} sentLabel={sentLabel}
                 sortCfg={sortCfg} setSortCfg={setSortCfg}
                 onDragStart={handleDragStart}
                 onDragOver={(e,gid)=>handleGroupDragOver(e,gid)}
@@ -3464,7 +3478,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
                 onDupNeg={null}
                 onSendToNeg={isPreVendas?item=>sendToNeg(group.id,item):null}
                 onSendToVendas={isNegociacoes&&perms.sendToVendas?item=>sendToVendas(group.id,item):null}
-                sentToNegIds={sentToNegIds}
+                sentToNegIds={sentToNegIds} sentLabel={sentLabel}
                 sortCfg={sortCfg} setSortCfg={setSortCfg}
                 stickyFirstCols={isVendas?2:0}
                 onDragStart={handleDragStart} onDragOver={e=>handleGroupDragOver(e,group.id)} onDrop={e=>handleGroupDrop(e,group.id)}
@@ -3997,7 +4011,7 @@ function MoveItemsModal({items,srcBoard,allBoards,onMove,onCancel}) {
     for(const item of items){
       const {data:ni}=await db.from("items")
         .insert({board_id:destBoardId,group_id:destGroupId,ordem:9999,
-          ...(isNegDest?{origin_item_id:item.id}:{})})
+          origin_item_id:item.id})
         .select().single();
       if(!ni) continue;
       const {data:vals}=await db.from("item_values").select("*").eq("item_id",item.id);
@@ -4024,7 +4038,7 @@ function MoveItemsModal({items,srcBoard,allBoards,onMove,onCancel}) {
     const destGroupObj=destGroups.find(g=>g.id===destGroupId)||{nome:"Vendas"};
     // Passa IDs dos itens originais do Pré-Vendas quando destino é Negociações
     // Passa destGroupObj quando destino é Vendas para o email ser disparado no BoardPage
-    onMove(destBoardId, isNegDest?items.map(i=>i.id):null, isVendasDest?destGroupObj:null);
+    onMove(destBoardId, (isNegDest||isVendasDest)?items.map(i=>i.id):null, isVendasDest?destGroupObj:null);
   };
 
   // Sub-picker de Negociações inline dentro do modal
