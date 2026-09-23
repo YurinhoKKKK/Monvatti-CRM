@@ -1414,6 +1414,18 @@ function CampoTimer({label,children,obs}){
   );
 }
 
+// Lê o corpo JSON da resposta mesmo quando o status é de erro. O supabase-js
+// trata status fora de 2xx como exceção e guarda a resposta em error.context.
+async function corpoDaResposta(data,error){
+  if(data&&typeof data==="object") return data;
+  const ctx=error?.context;
+  try{
+    if(ctx&&typeof ctx.json==="function") return await ctx.json();
+    if(ctx&&typeof ctx.text==="function") return JSON.parse(await ctx.text());
+  }catch{/* corpo ilegível: cai no erro genérico */}
+  return null;
+}
+
 function TimerIntakeModal({item,board,onClose,onSent}) {
   const toast=useToast();
   const col=n=>(board.columns||[]).find(c=>c.nome===n);
@@ -1422,12 +1434,19 @@ function TimerIntakeModal({item,board,onClose,onSent}) {
   const numero=item.numero_cliente??null;
   const razaoInicial=String(val("Razão Social")||"");
   const [razao,setRazao]      =useState(razaoInicial);
+  // Coluna de CNPJ do quadro (qualquer tipo); pré-preenche quando já houver valor.
+  const colCnpj=(board.columns||[]).find(c=>c.tipo==="cnpj")
+             ||(board.columns||[]).find(c=>/cnpj/i.test(c.nome||""));
+  const cnpjInicial=formataCNPJ(colCnpj?item.values?.[colCnpj.id]:"");
+  const [cnpj,setCnpj]        =useState(cnpjInicial);
   const [contato,setContato]  =useState(String(val("Nome")||""));
   const [inicio,setInicio]    =useState(String(val("Data Entrada")||""));
   const [meses,setMeses]      =useState(String(val("Tempo de Projeto")||""));
   const [about,setAbout]      =useState(String(val("Obs")||""));
-  // Plano "BPO" é o único que coincide com o modelo do projeto. Sugere, não decide.
-  const [modelo,setModelo]    =useState(String(val("Plano")||"").toLowerCase()==="bpo"?"bpo":"");
+  // Sugestão a partir do Plano: só BPO e Ema coincidem. Os demais planos
+  // (Gold, Platinum, Renovação, Feira, Mentoria, Feel) não sugerem nada.
+  const planoLower=String(val("Plano")||"").trim().toLowerCase();
+  const [modelo,setModelo]    =useState(planoLower==="bpo"?"bpo":planoLower==="ema"?"ema":"");
   const [servicos,setServicos]=useState([]);
   const [sistema,setSistema]  =useState("");
   const [cadencia,setCadencia]=useState("");
@@ -1444,6 +1463,7 @@ function TimerIntakeModal({item,board,onClose,onSent}) {
   const faltando=[
     !numero&&"Número do cliente (coluna Código)",
     !razao.trim()&&"Razão social",
+    (!soDigitos(cnpj)&&"CNPJ")||(!cnpjValido(cnpj)&&"CNPJ válido (dígitos verificadores)"),
     !contato.trim()&&"Nome do contato",
     !modelo&&"Modelo do projeto",
     !inicio&&"Data de início",
@@ -1456,19 +1476,30 @@ function TimerIntakeModal({item,board,onClose,onSent}) {
     !about.trim()&&"Sobre",
   ].filter(Boolean);
   const completo=faltando.length===0;
+  // Conferência de duplicado: SOMENTE por CNPJ. A verificação por semelhança de
+  // nome foi removida por decisão do Mauricio, junto com a porcentagem.
+  //
+  // LIMITAÇÃO CONHECIDA: das 159 empresas já cadastradas no CRM/Timer, apenas 2
+  // têm CNPJ hoje. Enquanto os CNPJs das antigas não forem preenchidos lá, esta
+  // conferência não detecta reenvio de cliente antigo e o envio criará empresa
+  // duplicada. Decisão consciente, não é bug.
+  //
+  // Empresa sem CNPJ cadastrado do outro lado não é erro: só não há como conferir.
+  const porCnpj=parecidas;
 
   // Conferência consultiva de duplicado ao ABRIR
   useEffect(()=>{
     let vivo=true;
     (async()=>{
       try{
-        const {data}=await db.functions.invoke("crm-timer",{body:{action:"check",payload:{razao_social:razaoInicial}}});
-        if(vivo&&data?.ok) setParecidas(data.matches||[]);
+        const {data,error}=await db.functions.invoke("crm-timer",{body:{action:"check",payload:{cnpj:soDigitos(cnpjInicial)}}});
+        const res=await corpoDaResposta(data,error);
+        if(vivo&&res?.ok) setParecidas(res.matches||[]);
       }catch{/* consultivo: falhar aqui não impede o envio */}
       if(vivo) setConferindo(false);
     })();
     return()=>{vivo=false;};
-  },[razaoInicial]);
+  },[razaoInicial,cnpjInicial]);
 
   const enviar=async()=>{
     setErro(null);setColisao(null);
@@ -1481,6 +1512,7 @@ function TimerIntakeModal({item,board,onClose,onSent}) {
       const payload={
         number:numero,
         razao_social:razao.trim(),
+        cnpj:soDigitos(cnpj), // 14 dígitos, sem máscara
         contato:contato.trim()||undefined,
         project_model:modelo||undefined,
         started_on:inicio||undefined,
@@ -1492,18 +1524,37 @@ function TimerIntakeModal({item,board,onClose,onSent}) {
         contracted_services:servicos.length?servicos:undefined,
       };
       const {data,error}=await db.functions.invoke("crm-timer",{body:{action:"create",payload}});
-      const res=data||{};
-      if(error&&!res.message){
-        setErro("Não foi possível falar com a integração. Tente novamente.");
+      // Em resposta com status de erro, o cliente Supabase devolve data vazio e
+      // guarda o corpo real em error.context. Sem ler dali, a mensagem específica
+      // (CNPJ repetido, número em uso, etc.) se perderia num erro genérico.
+      const res=await corpoDaResposta(data,error);
+      if(!res){
+        setErro("Não foi possível falar com a integração. Verifique a conexão e tente de novo.");
         setEnviando(false);return;
       }
       if(!res.ok){
         setErro(res.message||"O envio não foi concluído.");
         if(res.collision) setColisao(res.collision);
+        // Leva a colisão para o quadro de atenção, no topo do formulário
+        // Só entram no quadro de atenção os casos de empresa duplicada.
+        // "número em uso" não é semelhança de empresa, fica só na mensagem.
+        if(res.collision&&res.code==="cnpj_in_use"){
+          const lista=Array.isArray(res.collision)?res.collision:[res.collision];
+          const novos=lista.map(c=>({
+            name:c?.name||c?.razao_social||c?.company||"(empresa sem nome)",
+            group:c?.group||null,
+          }));
+          setParecidas(prev=>{
+            const chave=x=>String(x.name);
+            const vistos=new Set(novos.map(chave));
+            return [...novos,...prev.filter(x=>!vistos.has(chave(x)))];
+          });
+        }
         setEnviando(false);return; // mantém tudo preenchido
       }
       // Só marca como enviado com id confirmado de volta
-      await onSent(res.id,res.name);
+      // Persiste o CNPJ digitado na coluna do lead, para não se perder
+      await onSent(res.id,res.name,{cnpj:formataCNPJ(cnpj),colCnpjId:colCnpj?.id||null});
       toast("Cliente enviado para o CRM/Timer!");
       onClose();
     }catch{
@@ -1523,23 +1574,20 @@ function TimerIntakeModal({item,board,onClose,onSent}) {
 
       {conferindo&&(
         <div style={{padding:"9px 13px",background:"var(--surface2)",borderRadius:9,marginBottom:14,
-          fontSize:12.5,color:"var(--text3)"}}>Conferindo se já existe empresa parecida…</div>
+          fontSize:12.5,color:"var(--text3)"}}>Conferindo se já existe empresa com este CNPJ…</div>
       )}
-      {!conferindo&&parecidas.length>0&&(
-        <div style={{padding:"11px 13px",background:"rgba(217,119,6,.12)",border:"1px solid #d97706",
-          borderRadius:9,marginBottom:16,fontSize:12.5,color:"var(--text)"}}>
-          <strong>Atenção:</strong> já existem empresas com nome parecido no CRM/Timer:
+      {!conferindo&&porCnpj.length>0&&(
+        <div style={{padding:"11px 13px",background:"rgba(220,38,38,.12)",border:"1px solid #dc2626",
+          borderRadius:9,marginBottom:12,fontSize:12.5,color:"var(--text)"}}>
+          <strong>Já existe empresa com este CNPJ</strong> no CRM/Timer. É o mesmo cliente:
           <ul style={{margin:"7px 0 0",paddingLeft:18}}>
-            {parecidas.slice(0,5).map((m,i)=>(
-              <li key={i} style={{marginBottom:2}}>
-                {m.name}{m.group?` · ${m.group}`:""} <span style={{color:"var(--text3)"}}>({Math.round((m.similarity||0)*100)}%)</span>
-              </li>
+            {porCnpj.slice(0,5).map((m,i)=>(
+              <li key={i} style={{marginBottom:2}}>{m.name}{m.group?` · ${m.group}`:""}</li>
             ))}
           </ul>
-          <div style={{marginTop:6,color:"var(--text3)"}}>Isto é apenas um aviso. Você ainda pode enviar.</div>
+          <div style={{marginTop:6,color:"var(--text2)"}}>O envio será recusado se insistir neste CNPJ.</div>
         </div>
       )}
-
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:2}}>
         <CampoTimer label="Número do cliente">
           <div style={{...T.inp,display:"flex",alignItems:"center",fontWeight:700,
@@ -1552,12 +1600,18 @@ function TimerIntakeModal({item,board,onClose,onSent}) {
             <option value="">— Selecionar —</option>
             <option value="bpo">BPO</option>
             <option value="consultoria">Consultoria</option>
+            <option value="ema">Ema</option>
           </select>
         </CampoTimer>
       </div>
 
       <CampoTimer label="Razão social *">
         <input value={razao} onChange={e=>setRazao(e.target.value)} style={T.inp} maxLength={200}/>
+      </CampoTimer>
+      <CampoTimer label="CNPJ *" obs={soDigitos(cnpj)&&!cnpjValido(cnpj)?"Dígitos verificadores não conferem.":undefined}>
+        <input value={cnpj} onChange={e=>setCnpj(formataCNPJ(e.target.value))}
+          inputMode="numeric" placeholder="00.000.000/0000-00"
+          style={{...T.inp,borderColor:soDigitos(cnpj)&&!cnpjValido(cnpj)?"#d97706":undefined}}/>
       </CampoTimer>
       <CampoTimer label="Nome do contato *">
         <input value={contato} onChange={e=>setContato(e.target.value)} style={T.inp}/>
@@ -3669,12 +3723,18 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     setTimerItem(item);
   };
   // Grava o identificador devolvido. Só é chamado com id confirmado.
-  const marcarEnviadoTimer=async(companyId)=>{
+  const marcarEnviadoTimer=async(companyId,_nome,extras)=>{
     const iid=timerItem?.id;
     if(!iid||!companyId) return;
     const cid=String(companyId);
     upd(b=>{b.groups.forEach(g=>{const it=(g.items||[]).find(i=>i.id===iid);if(it)it.timer_company_id=cid;});});
     await db.from("items").update({timer_company_id:cid}).eq("id",iid);
+    // Guarda o CNPJ informado no formulário na coluna de CNPJ do quadro
+    const colId=extras?.colCnpjId, valorCnpj=extras?.cnpj;
+    if(colId&&valorCnpj){
+      upd(b=>{b.groups.forEach(g=>{const it=(g.items||[]).find(i=>i.id===iid);if(it)it.values[colId]=valorCnpj;});});
+      await db.from("item_values").upsert({item_id:iid,column_id:colId,value:valorCnpj},{onConflict:"item_id,column_id"});
+    }
   };
   const isVendas         = board?.nome==="Vendas";            // filtro de período
   const canActions       = isPreVendas;                       // mover inativa habilitado no Pré-Vendas
