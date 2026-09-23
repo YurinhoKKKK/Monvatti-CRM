@@ -164,7 +164,7 @@ const CTYPES = [
   {v:"text",l:"Texto"},{v:"status",l:"Status (múltipla escolha)"},
   {v:"date",l:"Data"},{v:"number",l:"Número"},
   {v:"currency",l:"Moeda (R$)"},{v:"email",l:"E-mail"},
-  {v:"phone",l:"Telefone"},{v:"link",l:"Link"},
+  {v:"phone",l:"Telefone"},{v:"link",l:"Link"},{v:"cnpj",l:"CNPJ"},
   {v:"user",l:"Responsável"},{v:"calculated",l:"Calculado (Valor÷Parcelas)"},
 ];
 
@@ -622,6 +622,69 @@ function SendToNegModal({groups, onSelect, onCancel}) {
 // ─────────────────────────────────────────────────────────────────────────────
 // CELLS — todas usando PortalDrop para dropdowns
 // ─────────────────────────────────────────────────────────────────────────────
+// ─── CNPJ ────────────────────────────────────────────────────────────────────
+const soDigitos = v => String(v??"").replace(/\D/g,"").slice(0,14);
+const formataCNPJ = v => {
+  const d = soDigitos(v);
+  if(!d) return "";
+  return d
+    .replace(/^(\d{2})(\d)/,"$1.$2")
+    .replace(/^(\d{2})\.(\d{3})(\d)/,"$1.$2.$3")
+    .replace(/\.(\d{3})(\d)/,".$1/$2")
+    .replace(/(\d{4})(\d)/,"$1-$2");
+};
+// Validação oficial pelos dois dígitos verificadores
+const cnpjValido = v => {
+  const d = soDigitos(v);
+  if(d.length!==14 || /^(\d)\1{13}$/.test(d)) return false;
+  const calc = (base,pesos) => {
+    const soma = base.reduce((acc,n,i)=>acc+n*pesos[i],0);
+    const r = soma % 11;
+    return r < 2 ? 0 : 11 - r;
+  };
+  const n = d.split("").map(Number);
+  const dv1 = calc(n.slice(0,12),[5,4,3,2,9,8,7,6,5,4,3,2]);
+  const dv2 = calc(n.slice(0,13),[6,5,4,3,2,9,8,7,6,5,4,3,2]);
+  return dv1===n[12] && dv2===n[13];
+};
+
+function CnpjCell({value,onChange}) {
+  // Sem efeito de sincronia: em leitura o valor vem das props; o estado local
+  // só existe enquanto o campo está em edição.
+  const [ed,setEd]=useState(false);
+  const [v,setV]=useState("");
+  const ref=useRef();
+  useEffect(()=>{if(ed)ref.current?.focus();},[ed]);
+  const abrir=()=>{setV(formataCNPJ(value));setEd(true);};
+  const digitos=soDigitos(v);
+  const invalido=digitos.length>0&&!cnpjValido(digitos);
+  const commit=()=>{
+    setEd(false);
+    const novo=digitos?formataCNPJ(digitos):null;
+    if(novo!==(value??null)) onChange(novo);
+  };
+  const invalidoLeitura=value&&!cnpjValido(value);
+  if(!ed) return (
+    <div onClick={abrir}
+      title={invalidoLeitura?"CNPJ com dígitos verificadores inválidos":undefined}
+      style={{padding:"5px 7px",borderRadius:5,cursor:"text",minHeight:22,fontSize:12.5,
+        color:value?"var(--text)":"var(--text3)",
+        borderBottom:invalidoLeitura?"1.5px solid #d97706":"none"}}>
+      {value?formataCNPJ(value):"00.000.000/0000-00"}
+    </div>
+  );
+  return (
+    <input ref={ref} value={v}
+      onChange={e=>setV(formataCNPJ(e.target.value))}
+      onBlur={commit}
+      onKeyDown={e=>{if(e.key==="Enter")commit();if(e.key==="Escape")setEd(false);}}
+      inputMode="numeric" placeholder="00.000.000/0000-00"
+      style={{width:"100%",padding:"5px 7px",borderRadius:5,fontSize:12.5,
+        border:`1px solid ${invalido?"#d97706":"var(--blue)"}`,
+        background:"var(--surface)",color:"var(--text)",outline:"none"}}/>
+  );
+}
+
 function EditableCell({value,onChange,type="text",placeholder=""}) {
   const [ed,setEd]=useState(false);
   const [v,setV]=useState(value??"");
@@ -840,11 +903,13 @@ function CalcCell({values,allColumns}) {
   return <div style={{padding:"5px 8px",fontSize:13,color:r!=null?"#059669":"var(--text3)",fontWeight:r!=null?600:400}}>{r!=null?fmtBRL(r):"—"}</div>;
 }
 
-function Cell({col,values,allColumns,responsibles,respByCol,allUsers,onChange,onRespChange}) {
+function Cell({col,values,allColumns,responsibles,respByCol,allUsers,onChange,onRespChange,item}) {
   const v=values?.[col.id];
   const opts=col.config?.options||[];
   switch(col.tipo){
     case "calculated": return <CalcCell values={values} allColumns={allColumns}/>;
+    // Coluna nativa: fonte única em items.numero_cliente, nunca em item_values
+    case "numero_cliente": return <EditableCell value={item?.numero_cliente??""} onChange={onChange} type="number" placeholder="—"/>;
     case "status":     return <StatusCell value={v} options={opts} onChange={onChange}/>;
     case "user":       return <UserCell value={respByCol?.[col.id]||[]} allUsers={allUsers} onChange={ids=>onRespChange(col.id,ids)}/>;
     case "currency":   return <CurrencyCell value={v} onChange={onChange}/>;
@@ -852,6 +917,7 @@ function Cell({col,values,allColumns,responsibles,respByCol,allUsers,onChange,on
     case "date":       return <EditableCell value={v} onChange={onChange} type="date"/>;
     case "number":     return <EditableCell value={v} onChange={onChange} type="number" placeholder="0"/>;
     case "phone":      return <EditableCell value={v} onChange={onChange} placeholder="(11) 9…"/>;
+    case "cnpj":       return <CnpjCell value={v} onChange={onChange}/>;
     case "email":      return <EditableCell value={v} onChange={onChange} placeholder="email@"/>;
     default:           return <EditableCell value={v} onChange={onChange} placeholder={col.nome}/>;
   }
@@ -1299,6 +1365,291 @@ function ColumnManagerModal({board,onClose,onRefresh,toast}) {
 // ─────────────────────────────────────────────────────────────────────────────
 // EXPORT MODAL — XLSX + PDF com cores da marca
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// ENVIO PARA O CRM/TIMER — formulário do cliente fechado
+// A chamada sai da Edge Function "crm-timer". O segredo nunca vem para cá.
+// Datas trafegam como TEXTO AAAA-MM-DD: sem Date, sem toISOString, sem fuso.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// CONFIRMAR O CAMINHO: usado apenas para o atalho até a empresa no CRM/Timer.
+const TIMER_EMPRESA_URL = id => `https://www.timermonvatti.com.br/empresas/${id}`;
+
+const SERVICOS_TIMER = [
+  {v:"mercado_livre",       l:"Mercado Livre"},
+  {v:"shopee",              l:"Shopee"},
+  {v:"amazon",              l:"Amazon"},
+  {v:"trafego",             l:"Tráfego"},
+  {v:"gestao_site",         l:"Gestão de site"},
+  {v:"desenvolvimento_site",l:"Desenvolvimento de site"},
+];
+const CADENCIAS_TIMER = [
+  {v:"semanal",            l:"Semanal"},
+  {v:"quinzenal",          l:"Quinzenal"},
+  {v:"semanal_quinzenal",  l:"Semanal depois quinzenal"},
+  {v:"quinzenal_semanal",  l:"Quinzenal depois semanal"},
+];
+
+// Soma meses a uma data AAAA-MM-DD usando só aritmética de texto e número.
+function somaMesesISO(iso,meses){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(iso||"")) return "";
+  const n=parseInt(meses,10);
+  if(!Number.isFinite(n)||n<=0) return "";
+  const [y,m,d]=iso.split("-").map(Number);
+  const total=y*12+(m-1)+n;
+  const ny=Math.floor(total/12), nm=(total%12)+1;
+  const bissexto=(ny%4===0&&ny%100!==0)||ny%400===0;
+  const ultimo=[31,bissexto?29:28,31,30,31,30,31,31,30,31,30,31][nm-1];
+  const nd=Math.min(d,ultimo);
+  return `${ny}-${String(nm).padStart(2,"0")}-${String(nd).padStart(2,"0")}`;
+}
+
+// Campo do formulário — fora do render para não remontar os inputs a cada tecla
+function CampoTimer({label,children,obs}){
+  return (
+    <div style={{marginBottom:14}}>
+      <label style={{...T.lbl,marginBottom:6}}>{label}</label>
+      {children}
+      {obs&&<div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>{obs}</div>}
+    </div>
+  );
+}
+
+function TimerIntakeModal({item,board,onClose,onSent}) {
+  const toast=useToast();
+  const col=n=>(board.columns||[]).find(c=>c.nome===n);
+  const val=n=>{const c=col(n);return c?(item.values?.[c.id]??""):"";};
+
+  const numero=item.numero_cliente??null;
+  const razaoInicial=String(val("Razão Social")||"");
+  const [razao,setRazao]      =useState(razaoInicial);
+  const [contato,setContato]  =useState(String(val("Nome")||""));
+  const [inicio,setInicio]    =useState(String(val("Data Entrada")||""));
+  const [meses,setMeses]      =useState(String(val("Tempo de Projeto")||""));
+  const [about,setAbout]      =useState(String(val("Obs")||""));
+  // Plano "BPO" é o único que coincide com o modelo do projeto. Sugere, não decide.
+  const [modelo,setModelo]    =useState(String(val("Plano")||"").toLowerCase()==="bpo"?"bpo":"");
+  const [servicos,setServicos]=useState([]);
+  const [sistema,setSistema]  =useState("");
+  const [cadencia,setCadencia]=useState("");
+  const [dor,setDor]          =useState("");
+
+  const [enviando,setEnviando]=useState(false);
+  const [erro,setErro]        =useState(null);
+  const [colisao,setColisao]  =useState(null);
+  const [parecidas,setParecidas]=useState([]);
+  const [conferindo,setConferindo]=useState(true);
+
+  const fim=somaMesesISO(inicio,meses);
+  // Todos os campos são obrigatórios para enviar.
+  const faltando=[
+    !numero&&"Número do cliente (coluna Código)",
+    !razao.trim()&&"Razão social",
+    !contato.trim()&&"Nome do contato",
+    !modelo&&"Modelo do projeto",
+    !inicio&&"Data de início",
+    !String(meses).trim()&&"Tempo de projeto (meses)",
+    (inicio&&String(meses).trim()&&!fim)&&"Data de término (confira início e meses)",
+    servicos.length===0&&"Serviços contratados (ao menos um)",
+    !cadencia&&"Cadência de contato",
+    !sistema.trim()&&"Sistema utilizado",
+    !dor.trim()&&"Maior dor",
+    !about.trim()&&"Sobre",
+  ].filter(Boolean);
+  const completo=faltando.length===0;
+
+  // Conferência consultiva de duplicado ao ABRIR
+  useEffect(()=>{
+    let vivo=true;
+    (async()=>{
+      try{
+        const {data}=await db.functions.invoke("crm-timer",{body:{action:"check",payload:{razao_social:razaoInicial}}});
+        if(vivo&&data?.ok) setParecidas(data.matches||[]);
+      }catch{/* consultivo: falhar aqui não impede o envio */}
+      if(vivo) setConferindo(false);
+    })();
+    return()=>{vivo=false;};
+  },[razaoInicial]);
+
+  const enviar=async()=>{
+    setErro(null);setColisao(null);
+    if(!completo){
+      setErro("Preencha todos os campos antes de enviar. Faltando: "+faltando.join(", ")+".");
+      return;
+    }
+    setEnviando(true);
+    try{
+      const payload={
+        number:numero,
+        razao_social:razao.trim(),
+        contato:contato.trim()||undefined,
+        project_model:modelo||undefined,
+        started_on:inicio||undefined,
+        ends_on:fim||undefined,
+        cadence:cadencia||undefined,
+        system_used:sistema.trim()||undefined,
+        main_pain:dor.trim()||undefined,
+        about:about.trim()||undefined,
+        contracted_services:servicos.length?servicos:undefined,
+      };
+      const {data,error}=await db.functions.invoke("crm-timer",{body:{action:"create",payload}});
+      const res=data||{};
+      if(error&&!res.message){
+        setErro("Não foi possível falar com a integração. Tente novamente.");
+        setEnviando(false);return;
+      }
+      if(!res.ok){
+        setErro(res.message||"O envio não foi concluído.");
+        if(res.collision) setColisao(res.collision);
+        setEnviando(false);return; // mantém tudo preenchido
+      }
+      // Só marca como enviado com id confirmado de volta
+      await onSent(res.id,res.name);
+      toast("Cliente enviado para o CRM/Timer!");
+      onClose();
+    }catch{
+      setErro("Falha inesperada no envio. Nada foi criado.");
+      setEnviando(false);
+    }
+  };
+
+  return (
+    <Modal title="🚀 Enviar para o CRM/Timer" onClose={onClose} width={600}>
+      {!numero&&(
+        <div style={{padding:"11px 13px",background:"rgba(220,38,38,.12)",border:"1px solid #dc2626",
+          borderRadius:9,marginBottom:16,fontSize:13,color:"var(--text)"}}>
+          Este lead está <strong>sem número de cliente</strong>. Preencha a coluna Código antes de enviar.
+        </div>
+      )}
+
+      {conferindo&&(
+        <div style={{padding:"9px 13px",background:"var(--surface2)",borderRadius:9,marginBottom:14,
+          fontSize:12.5,color:"var(--text3)"}}>Conferindo se já existe empresa parecida…</div>
+      )}
+      {!conferindo&&parecidas.length>0&&(
+        <div style={{padding:"11px 13px",background:"rgba(217,119,6,.12)",border:"1px solid #d97706",
+          borderRadius:9,marginBottom:16,fontSize:12.5,color:"var(--text)"}}>
+          <strong>Atenção:</strong> já existem empresas com nome parecido no CRM/Timer:
+          <ul style={{margin:"7px 0 0",paddingLeft:18}}>
+            {parecidas.slice(0,5).map((m,i)=>(
+              <li key={i} style={{marginBottom:2}}>
+                {m.name}{m.group?` · ${m.group}`:""} <span style={{color:"var(--text3)"}}>({Math.round((m.similarity||0)*100)}%)</span>
+              </li>
+            ))}
+          </ul>
+          <div style={{marginTop:6,color:"var(--text3)"}}>Isto é apenas um aviso. Você ainda pode enviar.</div>
+        </div>
+      )}
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:2}}>
+        <CampoTimer label="Número do cliente">
+          <div style={{...T.inp,display:"flex",alignItems:"center",fontWeight:700,
+            color:numero?"var(--text)":"var(--text3)",background:"var(--surface2)"}}>
+            {numero??"— sem número —"}
+          </div>
+        </CampoTimer>
+        <CampoTimer label="Modelo do projeto *">
+          <select value={modelo} onChange={e=>setModelo(e.target.value)} style={T.inp}>
+            <option value="">— Selecionar —</option>
+            <option value="bpo">BPO</option>
+            <option value="consultoria">Consultoria</option>
+          </select>
+        </CampoTimer>
+      </div>
+
+      <CampoTimer label="Razão social *">
+        <input value={razao} onChange={e=>setRazao(e.target.value)} style={T.inp} maxLength={200}/>
+      </CampoTimer>
+      <CampoTimer label="Nome do contato *">
+        <input value={contato} onChange={e=>setContato(e.target.value)} style={T.inp}/>
+      </CampoTimer>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:14}}>
+        <CampoTimer label="Início *">
+          <input type="date" value={inicio} onChange={e=>setInicio(e.target.value)} style={T.inp}/>
+        </CampoTimer>
+        <CampoTimer label="Tempo (meses) *">
+          <input type="number" min="1" value={meses} onChange={e=>setMeses(e.target.value)} style={T.inp}/>
+        </CampoTimer>
+        <CampoTimer label="Término" obs="calculado">
+          <div style={{...T.inp,display:"flex",alignItems:"center",background:"var(--surface2)",color:fim?"var(--text)":"var(--text3)"}}>
+            {fim||"—"}
+          </div>
+        </CampoTimer>
+      </div>
+
+      <CampoTimer label="Serviços contratados *">
+        <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+          {SERVICOS_TIMER.map(s=>{
+            const on=servicos.includes(s.v);
+            return (
+              <button key={s.v} type="button"
+                onClick={()=>setServicos(p=>on?p.filter(x=>x!==s.v):[...p,s.v])}
+                style={{...T.btn,padding:"7px 12px",fontSize:12,
+                  background:on?"var(--blue)":"var(--surface2)",
+                  color:on?"#fff":"var(--text2)",
+                  border:`1px solid ${on?"var(--blue)":"var(--border)"}`}}>
+                {on?"✓ ":""}{s.l}
+              </button>
+            );
+          })}
+        </div>
+      </CampoTimer>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <CampoTimer label="Cadência de contato *">
+          <select value={cadencia} onChange={e=>setCadencia(e.target.value)} style={T.inp}>
+            <option value="">— Selecionar —</option>
+            {CADENCIAS_TIMER.map(c=><option key={c.v} value={c.v}>{c.l}</option>)}
+          </select>
+        </CampoTimer>
+        <CampoTimer label="Sistema utilizado *">
+          <input value={sistema} onChange={e=>setSistema(e.target.value)} style={T.inp} placeholder="ERP, plataforma…"/>
+        </CampoTimer>
+      </div>
+
+      <CampoTimer label="Maior dor *">
+        <textarea value={dor} onChange={e=>setDor(e.target.value)} style={{...T.inp,minHeight:64,resize:"vertical"}}/>
+      </CampoTimer>
+      <CampoTimer label="Sobre *">
+        <textarea value={about} onChange={e=>setAbout(e.target.value)} maxLength={5000}
+          style={{...T.inp,minHeight:78,resize:"vertical"}}/>
+      </CampoTimer>
+
+      {erro&&(
+        <div style={{padding:"11px 13px",background:"rgba(220,38,38,.12)",border:"1px solid #dc2626",
+          borderRadius:9,marginBottom:14,fontSize:12.5,color:"var(--text)"}}>
+          {erro}
+          {colisao&&(
+            <div style={{marginTop:6,color:"var(--text2)"}}>
+              Colidiu com: <strong>{colisao.name||colisao.razao_social||JSON.stringify(colisao)}</strong>
+              {colisao.number?` (nº ${colisao.number})`:""}
+            </div>
+          )}
+        </div>
+      )}
+
+      {!completo&&(
+        <div style={{padding:"10px 13px",background:"var(--surface2)",border:"1px solid var(--border)",
+          borderRadius:9,marginBottom:14,fontSize:12.5,color:"var(--text2)"}}>
+          <strong style={{color:"var(--text)"}}>Todos os campos são obrigatórios.</strong> Faltando: {faltando.join(", ")}.
+        </div>
+      )}
+
+      <div style={{display:"flex",justifyContent:"flex-end",gap:10,marginTop:4}}>
+        <button onClick={onClose} style={{...T.btn,background:"var(--surface2)",color:"var(--text2)",padding:"10px 16px"}}>
+          Cancelar
+        </button>
+        <button onClick={enviar} disabled={enviando||!completo}
+          title={completo?undefined:"Faltando: "+faltando.join(", ")}
+          style={{...T.btn,background:"#059669",color:"#fff",padding:"10px 18px",
+            opacity:(enviando||!completo)?.55:1}}>
+          {enviando?"Enviando…":"Enviar para o CRM/Timer"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 function ExportModal({board,allUsers=[],onClose}) {
   const [busy,setBusy]=useState(false);
   const [selCols,setSelCols]=useState(()=>new Set(board.columns.map(c=>c.id)));
@@ -1547,7 +1898,7 @@ function ItemMenuOpt({icon,label,onClick,danger=false}) {
 
 function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,
   onDragStart,onDragOver,onDrop,onUpdateValue,onRespChange,sentToNegIds=new Set(),stickyFirstCols=0,colWidths=null,
-  siblingStages=null,onMoveStage=null,sentLabel="Negociações"}) {
+  siblingStages=null,onMoveStage=null,sentLabel="Negociações",onSendTimer=null}) {
   const [hov,setHov]=useState(false);
   const [menu,setMenu]=useState(false);
   const [menuPos,setMenuPos]=useState({top:0,right:0});
@@ -1567,7 +1918,10 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
     if(r) setMenuPos({top:r.bottom+4,right:window.innerWidth-r.right});
     setMenu(p=>!p);
   };
-  const alreadySent=sentToNegIds.has(item.id);
+  const enviadoTimer=!!item.timer_company_id;
+  // Marcador: mesmo padrão visual do pin de processo concluído usado nos outros quadros
+  const alreadySent=sentToNegIds.has(item.id)||enviadoTimer;
+  const rotuloEnviado=enviadoTimer?"CRM/Timer":sentLabel;
   const rowBg=selected?"var(--row-sel)":hov?"var(--surface2)":"var(--surface)";
   return (
     <tr draggable onDragStart={onDragStart} onDragOver={onDragOver} onDrop={onDrop}
@@ -1579,10 +1933,10 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
         position:"sticky",left:0,zIndex:3,background:"var(--surface)",
         boxShadow:"2px 0 0 var(--border)"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:5,position:"relative"}}>
-          <button onClick={onOpen} title={alreadySent?`Atualizações (já enviado para ${sentLabel})`:"Atualizações"}
+          <button onClick={onOpen} title={alreadySent?`Atualizações (já enviado para ${rotuloEnviado})`:"Atualizações"}
             style={{...T.iBtn,opacity:hov||selected?1:0.25,transition:"opacity .15s",fontSize:13,padding:"2px 3px",flexShrink:0,position:"relative"}}>
             📝
-            {alreadySent&&<span title={`Lead enviado para ${sentLabel}`} style={{position:"absolute",top:-4,right:-4,width:10,height:10,
+            {alreadySent&&<span title={`Lead enviado para ${rotuloEnviado}`} style={{position:"absolute",top:-4,right:-4,width:10,height:10,
               borderRadius:"50%",background:"#00C46A",border:"2px solid var(--surface)",
               display:"block",boxShadow:"0 0 6px #00C46A90"}}/>}
           </button>
@@ -1593,7 +1947,7 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
       {columns.map(col=>(
         <td key={col.id} style={{padding:"2px 3px",borderRight:"1px solid var(--border)",verticalAlign:"middle",maxWidth:220,overflow:"hidden",
           ...(stickyFirstCols>0&&columns.indexOf(col)<stickyFirstCols?{position:"sticky",left:(52+columns.slice(0,columns.indexOf(col)).reduce((s,_,i)=>s+(colWidths?.[i]||140),0))+"px",background:"var(--surface)",zIndex:2}:{})}}>
-          <Cell col={col} values={item.values} allColumns={columns}
+          <Cell col={col} item={item} values={item.values} allColumns={columns}
             responsibles={item.responsibles} respByCol={item.respByCol} allUsers={allUsers}
             onChange={v=>onUpdateValue(col.id,v)} onRespChange={onRespChange}/>
         </td>
@@ -1612,6 +1966,11 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
               alreadySent
                 ? <ItemMenuOpt icon="🔁" label="Reenviar para Negociações" onClick={()=>{setMenu(false);onSendToNeg();}}/>
                 : <ItemMenuOpt icon="🤝" label="Enviar para Negociações" onClick={()=>{setMenu(false);onSendToNeg();}}/>
+            )}
+            {onSendTimer&&(
+              enviadoTimer
+                ? <ItemMenuOpt icon="✅" label="Já enviado ao CRM/Timer" onClick={()=>{setMenu(false);onSendTimer(item);}}/>
+                : <ItemMenuOpt icon="🚀" label="Enviar para o CRM/Timer" onClick={()=>{setMenu(false);onSendTimer(item);}}/>
             )}
             {onSendToVendas&&(
               alreadySent
@@ -1742,7 +2101,7 @@ const SB={background:"none",border:"1px solid",borderRadius:6,padding:"4px 11px"
 function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobile,
   perms,currentUser,groupAccess,
   onToggleItem,onSelectAll,onAddItem,onDelGroup,onRenameGroup,onToggle,
-  onOpenItem,onUpdateValue,onRespChange,onDelItem,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,
+  onOpenItem,onUpdateValue,onRespChange,onDelItem,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,onSendTimer,
   onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,sentToNegIds=new Set(),sentLabel="Negociações",
   sortCfg={colId:null,dir:1},setSortCfg=()=>{},stickyFirstCols=0,siblingStages=null,onMoveStage=null}) {
   const [renaming,setRenaming]=useState(false);
@@ -1967,6 +2326,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                         onDupNeg={onDupNeg?()=>onDupNeg(item):null}
                         onSendToNeg={onSendToNeg?()=>onSendToNeg(item):null}
                         onSendToVendas={onSendToVendas?()=>onSendToVendas(item):null}
+                        onSendTimer={onSendTimer}
                         onDragStart={e=>onDragStart(e,item,group.id)}
                         onDragOver={e=>onItemDragOver(e,item.id,group.id)}
                         onDrop={e=>onItemDrop(e,item.id,group.id)}
@@ -2083,7 +2443,7 @@ function ItemPanel({item,board,allUsers,currentUser,onClose,onUpdateValue,onResp
                 gap:12,paddingBottom:10,borderBottom:"1px solid var(--border)"}}>
                 <div style={{width:130,fontSize:12,color:"var(--text3)",flexShrink:0,paddingTop:7,fontWeight:600,lineHeight:1.4}}>{col.nome}</div>
                 <div style={{flex:1,minWidth:0}}>
-                  <Cell col={col} values={item.values} allColumns={board.columns}
+                  <Cell col={col} item={item} values={item.values} allColumns={board.columns}
                     responsibles={item.responsibles} respByCol={item.respByCol} allUsers={allUsers}
                     onChange={v=>onUpdateValue(col.id,v)} onRespChange={onRespChange}/>
                 </div>
@@ -2237,7 +2597,7 @@ function FilterPanel({board,allUsers,filters,setFilters,onClose}) {
 function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedItems,isMobile,
   perms,currentUser,groupAccess,canManageParent,
   onToggleItem,onSelectAll,onAddItem,onDelItem,onOpenItem,
-  onUpdateValue,onRespChange,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,sentToNegIds=new Set(),sentLabel="Negociações",
+  onUpdateValue,onRespChange,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,onSendTimer,sentToNegIds=new Set(),sentLabel="Negociações",
   sortCfg={colId:null,dir:1},setSortCfg=()=>{},
   onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,
   onRenameSubGroup,onDelSubGroup,onEditParent,onDelParent,onMoveStage}) {
@@ -2316,6 +2676,7 @@ function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedIt
               onDupNeg={onDupNeg?item=>onDupNeg(sg.id,item):null}
               onSendToNeg={onSendToNeg?item=>onSendToNeg(sg.id,item):null}
               onSendToVendas={onSendToVendas?item=>onSendToVendas(sg.id,item):null}
+              onSendTimer={onSendTimer}
               sentToNegIds={sentToNegIds} sentLabel={sentLabel}
               sortCfg={sortCfg} setSortCfg={setSortCfg}
               onDragStart={onDragStart} onDragOver={e=>onDragOver(e,sg.id)} onDrop={e=>onDrop(e,sg.id)}
@@ -2471,7 +2832,8 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
   const [showColMgr,setShowColMgr]=useState(false);
   const [showExport,setShowExport]=useState(false);
   const [selected,setSelected]=useState(new Set());
-  const [stageMenuOpen,setStageMenuOpen]=useState(false); // menu "Mover para etapa" da barra de seleção
+  const [stageMenuOpen,setStageMenuOpen]=useState(false);
+  const [timerItem,setTimerItem]=useState(null); // item aberto no envio ao CRM/Timer // menu "Mover para etapa" da barra de seleção
   const [dragState,setDragState]=useState(null);
   const [dragOverGroup,setDragOverGroup]=useState(null);
   const [confirmM,setConfirmM]=useState(null);
@@ -2493,7 +2855,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
       db.from("boards").select("*").eq("id",bid).single(),
       db.from("columns").select("*").eq("board_id",bid).order("ordem"),
       db.from("groups").select("*").eq("board_id",bid).order("ordem"),
-      db.from("items").select("id,group_id,ordem,created_at").eq("board_id",bid).order("ordem"),
+      db.from("items").select("id,group_id,ordem,created_at,numero_cliente,timer_company_id").eq("board_id",bid).order("ordem"),
     ]);
     const ids=(itens||[]).map(i=>i.id);
     let vMap={},rMap={},rColMap={};
@@ -2576,6 +2938,13 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
   const addItem=async gid=>{
     const {data,error}=await db.from("items").insert({board_id:boardId,group_id:gid,ordem:9999}).select().single();
     if(error){toast("Erro ao criar item","error");return;}
+    // O número é atribuído por gatilho no banco (AFTER INSERT), então não vem no
+    // retorno do insert. Relê o item para exibir o código na hora, sem recarregar.
+    let numeroCliente=data.numero_cliente??null;
+    if(numeroCliente==null){
+      const {data:fresh}=await db.from("items").select("numero_cliente").eq("id",data.id).maybeSingle();
+      numeroCliente=fresh?.numero_cliente??null;
+    }
     // Auto-preenche responsável (owner do grupo) na PRIMEIRA coluna de responsável do board
     const group=board?.groups.find(g=>g.id===gid);
     const ownerIds=group?.owner_id?[group.owner_id]:[];
@@ -2583,11 +2952,27 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     if(ownerIds.length&&primaryUserCol){
       await db.from("item_responsables").insert(ownerIds.map(uid=>({item_id:data.id,user_id:uid,column_id:primaryUserCol.id})));
     }
-    upd(b=>{b.groups.find(g=>g.id===gid)?.items.push({...data,values:{},responsibles:ownerIds,respByCol:primaryUserCol&&ownerIds.length?{[primaryUserCol.id]:ownerIds}:{},updates:[]});});
+    upd(b=>{b.groups.find(g=>g.id===gid)?.items.push({...data,numero_cliente:numeroCliente,values:{},responsibles:ownerIds,respByCol:primaryUserCol&&ownerIds.length?{[primaryUserCol.id]:ownerIds}:{},updates:[]});});
     bump(boardId,1);
   };
 
   const updateValue=async(iid,gid,cid,val)=>{
+    const col=(board?.columns||[]).find(c=>c.id===cid);
+    // Coluna nativa: fonte única em items.numero_cliente. Nunca grava em item_values.
+    if(col?.tipo==="numero_cliente"){
+      const limpo=String(val??"").replace(/[^0-9]/g,"");
+      const num=limpo===""?null:parseInt(limpo,10);
+      upd(b=>{const it=b.groups.find(g=>g.id===gid)?.items.find(i=>i.id===iid);if(it)it.numero_cliente=num;});
+      if(selItem?.id===iid)setSelItem(p=>({...p,numero_cliente:num}));
+      const {error}=await db.from("items").update({numero_cliente:num}).eq("id",iid);
+      if(error){
+        toast(error.code==="23505"
+          ? "Esse número já está em uso por outro cliente."
+          : "Não foi possível salvar o número do cliente.","error");
+        loadBoard(boardId);
+      }
+      return;
+    }
     upd(b=>{const item=b.groups.find(g=>g.id===gid)?.items.find(i=>i.id===iid);if(item)item.values[cid]=val;});
     if(selItem?.id===iid)setSelItem(p=>({...p,values:{...p.values,[cid]:val}}));
     await db.from("item_values").upsert({item_id:iid,column_id:cid,value:val},{onConflict:"item_id,column_id"});
@@ -3271,6 +3656,26 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
   const isNegociacoes    = board?.nome==="Negociações";       // botão → Vendas (sendToVendas)
   // Rótulo do pin verde: indica para qual quadro o lead já foi encaminhado
   const sentLabel        = isNegociacoes ? "Vendas" : "Negociações";
+  // Envio ao CRM/Timer: só no quadro Vendas e para quem tem a permissão.
+  const abrirEnvioTimer=(item)=>{
+    if(item?.timer_company_id){
+      toast("Este cliente já foi enviado ao CRM/Timer (empresa "+item.timer_company_id+").","warning");
+      return;
+    }
+    if(!item?.numero_cliente){
+      toast("Preencha o Código do cliente antes de enviar ao CRM/Timer.","error");
+      return;
+    }
+    setTimerItem(item);
+  };
+  // Grava o identificador devolvido. Só é chamado com id confirmado.
+  const marcarEnviadoTimer=async(companyId)=>{
+    const iid=timerItem?.id;
+    if(!iid||!companyId) return;
+    const cid=String(companyId);
+    upd(b=>{b.groups.forEach(g=>{const it=(g.items||[]).find(i=>i.id===iid);if(it)it.timer_company_id=cid;});});
+    await db.from("items").update({timer_company_id:cid}).eq("id",iid);
+  };
   const isVendas         = board?.nome==="Vendas";            // filtro de período
   const canActions       = isPreVendas;                       // mover inativa habilitado no Pré-Vendas
 
@@ -3449,6 +3854,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
                 onDupNeg={null}
                 onSendToNeg={isPreVendas?(gid,item)=>sendToNeg(gid,item):null}
                 onSendToVendas={isNegociacoes&&perms.sendToVendas?(gid,item)=>sendToVendas(gid,item):null}
+                onSendTimer={isVendas&&perms.sendToVendas?abrirEnvioTimer:null}
                 sentToNegIds={sentToNegIds} sentLabel={sentLabel}
                 sortCfg={sortCfg} setSortCfg={setSortCfg}
                 onDragStart={handleDragStart}
@@ -3478,6 +3884,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
                 onDupNeg={null}
                 onSendToNeg={isPreVendas?item=>sendToNeg(group.id,item):null}
                 onSendToVendas={isNegociacoes&&perms.sendToVendas?item=>sendToVendas(group.id,item):null}
+                onSendTimer={isVendas&&perms.sendToVendas?abrirEnvioTimer:null}
                 sentToNegIds={sentToNegIds} sentLabel={sentLabel}
                 sortCfg={sortCfg} setSortCfg={setSortCfg}
                 stickyFirstCols={isVendas?2:0}
@@ -3518,6 +3925,8 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
       {showFilters&&<FilterPanel board={board} allUsers={allUsers} filters={filters} setFilters={setFilters} onClose={()=>setShowFilters(false)}/>}
       {showColMgr&&<ColumnManagerModal board={board} toast={toast} onClose={()=>setShowColMgr(false)} onRefresh={()=>loadBoard(boardId)}/>}
       {showExport&&<ExportModal board={{...board,groups:visibleGroups}} allUsers={allUsers} onClose={()=>setShowExport(false)}/>}
+      {timerItem&&<TimerIntakeModal item={timerItem} board={board}
+        onClose={()=>setTimerItem(null)} onSent={marcarEnviadoTimer}/>}
       {parentGroupM!==null&&(
         <ParentGroupModal
           initial={parentGroupM?.id?parentGroupM:null}
