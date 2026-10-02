@@ -1426,7 +1426,7 @@ async function corpoDaResposta(data,error){
   return null;
 }
 
-function TimerIntakeModal({item,board,onClose,onSent}) {
+function TimerIntakeModal({item,board,allUsers=[],onClose,onSent}) {
   const toast=useToast();
   const col=n=>(board.columns||[]).find(c=>c.nome===n);
   const val=n=>{const c=col(n);return c?(item.values?.[c.id]??""):"";};
@@ -1439,6 +1439,40 @@ function TimerIntakeModal({item,board,onClose,onSent}) {
              ||(board.columns||[]).find(c=>/cnpj/i.test(c.nome||""));
   const cnpjInicial=formataCNPJ(colCnpj?item.values?.[colCnpj.id]:"");
   const [cnpj,setCnpj]        =useState(cnpjInicial);
+
+  // ── Campos derivados das colunas do quadro (não editáveis aqui; a fonte é a coluna)
+  // Valor do Projeto (currency) é guardado como número; Parcelas (number) como texto.
+  const colValor=(board.columns||[]).find(c=>c.nome==="Valor do Projeto");
+  const colParcelas=(board.columns||[]).find(c=>c.nome==="Parcelas");
+  const colCloser=(board.columns||[]).find(c=>c.tipo==="user"&&c.nome==="Closer");
+  const valorProjeto=(()=>{
+    const bruto=colValor?item.values?.[colValor.id]:null;
+    if(bruto==null||bruto==="") return null;
+    const n=typeof bruto==="number"?bruto:parseFloat(String(bruto).replace(/[^0-9.,-]/g,"").replace(/\./g,"").replace(",","."));
+    return Number.isFinite(n)&&n>=0?n:null;
+  })();
+  const parcelas=(()=>{
+    const bruto=colParcelas?item.values?.[colParcelas.id]:null;
+    if(bruto==null||bruto==="") return null;
+    const n=parseInt(String(bruto).replace(/[^0-9]/g,""),10);
+    return Number.isInteger(n)&&n>0?n:null;
+  })();
+  // Apenas o NOME do closer, como texto. Sem id, sem e-mail, sem foto.
+  const closerNome=(()=>{
+    const ids=colCloser?(item.respByCol?.[colCloser.id]||[]):[];
+    const nomes=ids.map(uid=>allUsers.find(u=>u.id===uid)?.nome).filter(Boolean);
+    return nomes.length?nomes.join(", "):null;
+  })();
+  // Coluna AUSENTE é diferente de coluna vazia: ausente vira aviso visível, para
+  // que uma coluna renomeada ou removida não faça o campo sumir em silêncio.
+  const derivados=[
+    {rotulo:"Valor",    coluna:"Valor do Projeto", ausente:!colValor,
+     texto:valorProjeto!=null?fmtBRL(valorProjeto):null},
+    {rotulo:"Parcelas", coluna:"Parcelas",         ausente:!colParcelas,
+     texto:parcelas!=null?`${parcelas}x`:null},
+    {rotulo:"Closer",   coluna:"Closer",           ausente:!colCloser,
+     texto:closerNome||null},
+  ];
   const [contato,setContato]  =useState(String(val("Nome")||""));
   const [inicio,setInicio]    =useState(String(val("Data Entrada")||""));
   const [meses,setMeses]      =useState(String(val("Tempo de Projeto")||""));
@@ -1474,6 +1508,11 @@ function TimerIntakeModal({item,board,onClose,onSent}) {
     !sistema.trim()&&"Sistema utilizado",
     !dor.trim()&&"Maior dor",
     !about.trim()&&"Sobre",
+    // Derivados das colunas do quadro: obrigatórios, mas corrigidos NA COLUNA,
+    // não aqui, para não criar um segundo lugar de edição do mesmo dado.
+    valorProjeto==null&&"Valor do Projeto (preencha a coluna no quadro)",
+    parcelas==null&&"Parcelas (preencha a coluna no quadro)",
+    !closerNome&&"Closer (preencha a coluna no quadro)",
   ].filter(Boolean);
   const completo=faltando.length===0;
   // Conferência de duplicado: SOMENTE por CNPJ. A verificação por semelhança de
@@ -1522,6 +1561,9 @@ function TimerIntakeModal({item,board,onClose,onSent}) {
         main_pain:dor.trim()||undefined,
         about:about.trim()||undefined,
         contracted_services:servicos.length?servicos:undefined,
+        project_value:valorProjeto??undefined,
+        installments:parcelas??undefined,
+        closer_name:closerNome??undefined,
       };
       const {data,error}=await db.functions.invoke("crm-timer",{body:{action:"create",payload}});
       // Em resposta com status de erro, o cliente Supabase devolve data vazio e
@@ -1630,6 +1672,32 @@ function TimerIntakeModal({item,board,onClose,onSent}) {
           </div>
         </CampoTimer>
       </div>
+
+      <CampoTimer label="Do quadro (obrigatórios, editados na coluna) *"
+        obs="Vem das colunas do lead. Para preencher ou corrigir, edite a coluna no quadro e reabra este formulário. Valor Mensal não é enviado: o CRM/Timer recalcula.">
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+          {derivados.map(d=>(
+            <div key={d.rotulo}
+              title={d.ausente?`A coluna "${d.coluna}" não existe neste quadro`:(d.texto||"")}
+              style={{...T.inp,background:(d.ausente||!d.texto)?"rgba(217,119,6,.10)":"var(--surface2)",
+                borderColor:(d.ausente||!d.texto)?"#d97706":undefined,
+                display:"flex",alignItems:"center",gap:6,
+                color:(d.ausente||!d.texto)?"#d97706":"var(--text)",
+                overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>
+              {d.ausente?"⚠ coluna não encontrada":(d.texto||`⚠ ${d.rotulo}: não preenchido`)}
+            </div>
+          ))}
+        </div>
+      </CampoTimer>
+      {derivados.some(d=>d.ausente)&&(
+        <div style={{padding:"10px 13px",background:"rgba(217,119,6,.12)",border:"1px solid #d97706",
+          borderRadius:9,marginBottom:14,fontSize:12.5,color:"var(--text)"}}>
+          <strong>Coluna não encontrada neste quadro:</strong>{" "}
+          {derivados.filter(d=>d.ausente).map(d=>`"${d.coluna}"`).join(", ")}.
+          Esses campos são obrigatórios no envio, então <strong>o envio fica bloqueado</strong>
+          até a coluna existir e estar preenchida. Verifique se ela foi renomeada ou removida no quadro.
+        </div>
+      )}
 
       <CampoTimer label="Serviços contratados *">
         <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
@@ -2517,6 +2585,8 @@ function ItemPanel({item,board,allUsers,currentUser,onClose,onUpdateValue,onResp
 function FilterPanel({board,allUsers,filters,setFilters,onClose}) {
   // Colunas de status lidas diretamente do board — sempre atualizadas
   const statusCols=board?.columns?.filter(c=>c.tipo==="status")||[];
+  // Colunas de data do quadro: o filtro usa UMA delas como âncora, escolhida aqui.
+  const dateColsBoard=(board?.columns||[]).filter(c=>c.tipo==="date");
   const isVendasBoard=board?.nome==="Vendas";
   const [local,setLocal]=useState(()=>({...filters}));
 
@@ -2555,6 +2625,23 @@ function FilterPanel({board,allUsers,filters,setFilters,onClose}) {
         {/* Filtros de data — ocultos no Vendas pois já existe a barra de período */}
         {!isVendasBoard&&<div>
           <div style={{...T.lbl,marginBottom:12}}>Intervalo de datas</div>
+          {dateColsBoard.length>0&&(
+            <div style={{marginBottom:12}}>
+              <label style={{fontSize:11,color:"var(--text3)",display:"block",marginBottom:4}}>
+                Filtrar pela coluna
+              </label>
+              <select value={local.dateCol||dateColsBoard[0].id}
+                onChange={e=>setLocal(f=>({...f,dateCol:e.target.value}))}
+                style={{...T.inp,padding:"8px 10px",fontSize:12}}>
+                {dateColsBoard.map(c=><option key={c.id} value={c.id}>{c.nome}</option>)}
+              </select>
+              {dateColsBoard.length>1&&(
+                <div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>
+                  Este quadro tem {dateColsBoard.length} colunas de data. O filtro usa apenas a escolhida acima.
+                </div>
+              )}
+            </div>
+          )}
           <div style={{display:"flex",gap:10,marginBottom:16}}>
             <div style={{flex:1}}>
               <label style={{fontSize:11,color:"var(--text3)",display:"block",marginBottom:4}}>De</label>
@@ -2914,17 +3001,34 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     const ids=(itens||[]).map(i=>i.id);
     let vMap={},rMap={},rColMap={};
     if(ids.length){
-      // Busca em chunks de 100 IDs para evitar o corte silencioso do Supabase (default 1000 linhas).
-      // limit(50000) garante que nenhum chunk seja truncado independentemente do crescimento do CRM.
-      const CHUNK=100;
+      // ATENÇÃO: o Supabase corta a resposta em 1000 linhas por requisição e IGNORA
+      // .limit() maior que isso. Um quadro com 89 itens e ~11 valores cada já passa
+      // de 1000 linhas, e as linhas excedentes (as mais recentes) simplesmente não
+      // chegavam: o dado existia no banco, mas sumia da tela ao recarregar.
+      //
+      // Por isso aqui NÃO basta dividir por item: é preciso PAGINAR com range()
+      // dentro de cada bloco, até vir uma página menor que o tamanho da página.
+      // Assim funciona independentemente de quantos itens ou colunas o quadro tenha.
+      const PAGINA=1000;
+      const CHUNK=50;
       const chunks=[];
       for(let i=0;i<ids.length;i+=CHUNK) chunks.push(ids.slice(i,i+CHUNK));
+      const buscaPaginado=async(tabela,chunk)=>{
+        const out=[];
+        for(let de=0;;de+=PAGINA){
+          const {data,error}=await db.from(tabela).select("*").in("item_id",chunk).range(de,de+PAGINA-1);
+          if(error){console.error("Falha ao carregar "+tabela,error);break;}
+          out.push(...(data||[]));
+          if(!data||data.length<PAGINA) break;
+        }
+        return out;
+      };
       const [valsArr,respsArr]=await Promise.all([
-        Promise.all(chunks.map(chunk=>db.from("item_values").select("*").in("item_id",chunk).limit(1000000))),
-        Promise.all(chunks.map(chunk=>db.from("item_responsables").select("*").in("item_id",chunk).limit(1000000))),
+        Promise.all(chunks.map(chunk=>buscaPaginado("item_values",chunk))),
+        Promise.all(chunks.map(chunk=>buscaPaginado("item_responsables",chunk))),
       ]);
-      const vals=valsArr.flatMap(r=>r.data||[]);
-      const resps=respsArr.flatMap(r=>r.data||[]);
+      const vals=valsArr.flat();
+      const resps=respsArr.flat();
       for(const v of vals){if(!vMap[v.item_id])vMap[v.item_id]={};vMap[v.item_id][v.column_id]=v.value;}
       // Colunas de responsável deste board (ordenadas); a primeira é a "primária" (ex.: Closer)
       const userColIds=(cols||[]).filter(c=>c.tipo==="user").sort((a,b)=>(a.ordem||0)-(b.ordem||0)).map(c=>c.id);
@@ -3685,20 +3789,24 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     if(filters.resp?.length) r=r.filter(i=>filters.resp.some(uid=>i.responsibles?.includes(uid)));
     // Filtro por intervalo de datas
     if(filters.dateFrom||filters.dateTo||filters.month){
-      const dateCols=board?.columns?.filter(c=>c.tipo==="date")||[];
-      r=r.filter(i=>{
-        for(const col of dateCols){
-          const v=i.values?.[col.id]; if(!v) continue;
-          const d=new Date(v);
-          if(filters.dateFrom&&d<new Date(filters.dateFrom)) return false;
-          if(filters.dateTo&&d>new Date(filters.dateTo)) return false;
-          if(filters.month){
-            const [y,m]=filters.month.split("-").map(Number);
-            if(d.getFullYear()!==y||d.getMonth()+1!==m) return false;
-          }
-        }
-        return true;
-      });
+      // ÂNCORA ÚNICA: o filtro usa UMA coluna de data, escolhida pelo usuário.
+      // Antes percorria todas as colunas de data exigindo que TODAS casassem, o que
+      // fazia o filtro de um quadro com "Data Reunião" e "Follow Up" responder pela
+      // coluna errada. Sem escolha explícita, usa a primeira coluna de data do quadro.
+      const dateCols=(board?.columns||[]).filter(c=>c.tipo==="date");
+      const ancora=dateCols.find(c=>c.id===filters.dateCol)||dateCols[0];
+      if(ancora){
+        r=r.filter(i=>{
+          // Datas são texto AAAA-MM-DD: compara como texto, sem Date e sem fuso.
+          const bruto=i.values?.[ancora.id];
+          const v=typeof bruto==="string"?bruto.slice(0,10):"";
+          if(!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false; // sem data na âncora sai do filtro
+          if(filters.dateFrom&&v<filters.dateFrom) return false;
+          if(filters.dateTo&&v>filters.dateTo) return false;
+          if(filters.month&&v.slice(0,7)!==filters.month) return false;
+          return true;
+        });
+      }
     }
     return r;
   };
@@ -3985,7 +4093,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
       {showFilters&&<FilterPanel board={board} allUsers={allUsers} filters={filters} setFilters={setFilters} onClose={()=>setShowFilters(false)}/>}
       {showColMgr&&<ColumnManagerModal board={board} toast={toast} onClose={()=>setShowColMgr(false)} onRefresh={()=>loadBoard(boardId)}/>}
       {showExport&&<ExportModal board={{...board,groups:visibleGroups}} allUsers={allUsers} onClose={()=>setShowExport(false)}/>}
-      {timerItem&&<TimerIntakeModal item={timerItem} board={board}
+      {timerItem&&<TimerIntakeModal item={timerItem} board={board} allUsers={allUsers}
         onClose={()=>setTimerItem(null)} onSent={marcarEnviadoTimer}/>}
       {parentGroupM!==null&&(
         <ParentGroupModal
