@@ -2888,10 +2888,10 @@ function ParentGroupModal({initial,allUsers,onSave,onCancel}) {
         </div>
 
         {!isEdit&&<div style={{background:"var(--surface2)",borderRadius:10,padding:"12px 14px",fontSize:12,color:"var(--text3)",borderLeft:"3px solid var(--blue)"}}>
-          <strong style={{color:"var(--text)"}}>Ao criar, serão gerados automaticamente 4 sub-grupos:</strong>
+          <strong style={{color:"var(--text)"}}>Ao criar, serão gerados automaticamente 5 sub-grupos:</strong>
           <ul style={{margin:"6px 0 0",paddingLeft:18,lineHeight:1.8}}>
-            <li>Oportunidades Closer</li><li>Negociando</li>
-            <li>Fechado/Ganho</li><li>Recusado/Negócio Futuro</li>
+            <li>Oportunidades Closer</li><li>Negociando</li><li>Fechado/Ganho</li>
+            <li>Não comparecido</li><li>Recusado/Negócio Futuro</li>
           </ul>
         </div>}
 
@@ -3252,6 +3252,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     {nome:"Oportunidades Closer",color:"#3B82F6"},
     {nome:"Negociando",color:"#F59E0B"},
     {nome:"Fechado/Ganho",color:"#10B981"},
+    {nome:"Não comparecido",color:"#8B5CF6"},
     {nome:"Recusado/Negócio Futuro",color:"#EF4444"},
   ];
 
@@ -5470,6 +5471,10 @@ function ChartCard({title,subtitle,children,action}){
   );
 }
 
+// Registros do quadro Vendas que NÃO são venda (decisão do Mauricio): entram no
+// quadro para controle, mas ficam FORA de receita, contagem, ticket, funil e conversão.
+const PLANOS_NAO_VENDA=["Potencializa Amazon"];
+
 function DashboardPage({onBack,wsId,allUsers,perms,profile}){
   const{isMobile,width}=useBreakpoint();
   const toast=useToast();
@@ -5484,6 +5489,7 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
   const[rawVals,setRawVals]=useState([]);
   const[boards,setBoards]=useState([]);
   const[cols,setCols]=useState([]);
+  const[groups,setGroups]=useState([]);
   const[loading,setLoading]=useState(true);
   const[lastUpdate,setLastUpdate]=useState(null);
   const[goal,setGoal]=useState(0);
@@ -5527,32 +5533,35 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
       const boardIds=bds.map(b=>b.id);
       const{data:allCols}=await db.from("columns").select("id,board_id,nome,tipo,config").in("board_id",boardIds);
       setCols(allCols||[]);
+      const{data:allGroups}=await db.from("groups").select("id,board_id,nome,ordem,parent_group_id,is_parent").in("board_id",boardIds);
+      setGroups(allGroups||[]);
 
       // Busca TODOS os itens dos 3 boards. O recorte por período é feito no cliente
       // (inPeriod), ancorado na coluna "Data Entrada" de cada board — e NÃO no created_at,
       // que reflete apenas quando a linha foi criada no quadro. Isto evita que um lead
       // com Data Entrada no período, mas criado fora dele, fique de fora da busca.
-      const{data:items}=await db.from("items").select("id,board_id,created_at")
+      // group_id é essencial: em Negociações o ESTADO do lead é o grupo (etapa), não a coluna Etapa.
+      const{data:items}=await db.from("items").select("id,board_id,group_id,created_at")
         .in("board_id",boardIds).order("created_at",{ascending:true});
 
       // Todos negociações (sem filtro) para proposta na rua
       const negB=bds.find(b=>b.nome==="Negociações");
       let allNeg=[];
-      if(negB){const{data:ni}=await db.from("items").select("id,board_id,created_at").eq("board_id",negB.id);allNeg=ni||[];}
+      if(negB){const{data:ni}=await db.from("items").select("id,board_id,group_id,created_at").eq("board_id",negB.id);allNeg=ni||[];}
 
       // Últimos 8 meses vendas (para gráfico)
       const venB=bds.find(b=>b.nome==="Vendas");
       let allVen=[];
       if(venB){
         const dt8=new Date();dt8.setMonth(dt8.getMonth()-7);dt8.setDate(1);dt8.setHours(0,0,0,0);
-        const{data:vi}=await db.from("items").select("id,board_id,created_at").eq("board_id",venB.id).gte("created_at",dt8.toISOString());
+        const{data:vi}=await db.from("items").select("id,board_id,group_id,created_at").eq("board_id",venB.id).gte("created_at",dt8.toISOString());
         allVen=vi||[];
       }
 
       // Todos pré-vendas (para MQL total)
       const preB=bds.find(b=>b.nome==="Pré - Vendas");
       let allPre=[];
-      if(preB){const{data:pi}=await db.from("items").select("id,board_id,created_at").eq("board_id",preB.id);allPre=pi||[];}
+      if(preB){const{data:pi}=await db.from("items").select("id,board_id,group_id,created_at").eq("board_id",preB.id);allPre=pi||[];}
 
       // ── DEDUPLICAR por id antes de salvar ────────────────────────────────
       const uniqMap=new Map();
@@ -5562,22 +5571,26 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
       setRawItems(uniqItems);
 
       if(uniqIds.length){
-        // Busca item_values em chunks de 100 IDs por request com limit alto explícito
-        // para evitar o corte silencioso do Supabase (default 1000 linhas por query)
-        const CHUNK=100;
+        // ATENÇÃO: o Supabase corta a resposta em 1000 linhas e IGNORA .limit() maior.
+        // Um bloco de 100 itens já chegava a 960 linhas: a 40 do teto. Por isso é
+        // preciso PAGINAR com range() dentro de cada bloco, até vir página incompleta.
+        const PAGINA=1000, CHUNK=50;
         const chunks=[];
         for(let i=0;i<uniqIds.length;i+=CHUNK) chunks.push(uniqIds.slice(i,i+CHUNK));
-        const valsArr=await Promise.all(
-          chunks.map(chunk=>
-            db.from("item_values")
-              .select("item_id,column_id,value")
-              .in("item_id",chunk)
-              .limit(10000)   // explícito: nunca deixar o default 1000 cortar resultados
-          )
-        );
+        const buscaPaginado=async(chunk)=>{
+          const out=[];
+          for(let de=0;;de+=PAGINA){
+            const{data,error}=await db.from("item_values").select("item_id,column_id,value").in("item_id",chunk).range(de,de+PAGINA-1);
+            if(error){console.error("Dashboard: falha ao carregar item_values",error);break;}
+            out.push(...(data||[]));
+            if(!data||data.length<PAGINA) break;
+          }
+          return out;
+        };
+        const valsArr=await Promise.all(chunks.map(buscaPaginado));
         // Deduplicar item_values por (item_id, column_id) — pega o último
         const vMap=new Map();
-        for(const v of valsArr.flatMap(r=>r.data||[])) vMap.set(v.item_id+"_"+v.column_id,v);
+        for(const v of valsArr.flat()) vMap.set(v.item_id+"_"+v.column_id,v);
         setRawVals([...vMap.values()]);
       }else setRawVals([]);
 
@@ -5598,7 +5611,7 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
     const gB=nome=>boards.find(b=>b.nome===nome);
     const gC=(bNome,cNome,tipo)=>cols.find(c=>{const b=gB(bNome);return b&&c.board_id===b.id&&(cNome?c.nome===cNome:true)&&(tipo?c.tipo===tipo:true);});
 
-    // Índice de valores: {itemId: {colId: value}} — acesso O(1), sem buscas repetidas
+    // Índice de valores: {itemId: {colId: value}}
     const valIdx={};
     for(const row of rawVals){
       if(!valIdx[row.item_id]) valIdx[row.item_id]={};
@@ -5606,28 +5619,39 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
       valIdx[row.item_id][row.column_id]=(v!==null&&v!==undefined&&typeof v==="object"&&"value" in v)?v.value:v;
     }
     const gV=(itemId,colId)=>colId?(valIdx[itemId]?.[colId]??null):null;
-
-    // Itens "preenchidos": têm ao menos 1 valor não-nulo no item_values
     const itemsComValor=new Set(rawVals.filter(r=>r.value!==null&&r.value!==undefined&&r.value!=="").map(r=>r.item_id));
     const isPreenchido=id=>itemsComValor.has(id);
 
     const venB=gB("Vendas"),negB=gB("Negociações"),preB=gB("Pré - Vendas");
     const venValC=gC("Vendas","Valor do Projeto","currency");
     const venParC=gC("Vendas","Parcelas","number");
+    const venPlanoC=gC("Vendas","Plano","status");
     const negValC=gC("Negociações","Valor do Projeto","currency");
-    const negEtapaC=gC("Negociações","Etapa","status");
-    const negOriC=gC("Negociações","Origem","status");
     const preMqlC=gC("Pré - Vendas","MQL","status");
+    const preOriC=gC("Pré - Vendas","Origem","status");
 
-    // Colunas "Data Entrada" por board (âncora de período). Negociações NÃO tem essa
-    // coluna → mantém o created_at (que é o marco de entrada no board de Negociações).
+    // ── ESTADO em Negociações = GRUPO (etapa), nunca a coluna "Etapa".
+    // A coluna não acompanha o arrasto do lead e ficava travada em "Negociando" para
+    // leads já perdidos ou ganhos (R$ 611 mil de pipeline fantasma em out/2026).
+    const grpById={};
+    for(const g of groups) grpById[g.id]=g;
+    const etapaDoItem=it=>{
+      const g=grpById[it.group_id];
+      if(!g) return null;
+      if(g.is_parent) return "(sem etapa)"; // lead preso no grupo-mãe, fora de qualquer etapa
+      return g.nome;
+    };
+    // Agrupa as etapas padronizadas (mesmo nome em todos os closers) pela ordem de exibição
+    const etapaOrdem={};
+    for(const g of groups){ if(g.board_id===negB?.id&&g.parent_group_id&&etapaOrdem[g.nome]==null) etapaOrdem[g.nome]=g.ordem??99; }
+
+    // ── Âncora de período: "Data Entrada" (Vendas/Pré-Vendas); Negociações usa created_at.
     const venDeC=gC("Vendas","Data Entrada","date");
     const preDeC=gC("Pré - Vendas","Data Entrada","date");
     const deColByBoard={};
     if(venB&&venDeC) deColByBoard[venB.id]=venDeC.id;
     if(preB&&preDeC) deColByBoard[preB.id]=preDeC.id;
-    // Data-âncora de um item: valor da "Data Entrada" do seu board (parse LOCAL, evita
-    // erro de fuso); fallback para created_at se não houver coluna ou valor.
+    const temDataEntrada=it=>{const cid=deColByBoard[it.board_id];const raw=cid?gV(it.id,cid):null;return typeof raw==="string"&&/^\d{4}-\d{2}-\d{2}/.test(raw);};
     const anchorDate=it=>{
       const cid=deColByBoard[it.board_id];
       const raw=cid?gV(it.id,cid):null;
@@ -5635,10 +5659,8 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
         const[y,m,dd]=raw.slice(0,10).split("-").map(Number);
         return new Date(y,m-1,dd);
       }
-      return new Date(it.created_at);
+      return new Date(it.created_at); // fallback: sem Data Entrada, usa a criação (tornado visível abaixo)
     };
-
-    // Função de filtro de período
     const inPeriod=it=>{
       if(filterMode==="all") return true;
       if(filterMode==="month"&&selMonth){
@@ -5651,80 +5673,72 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
         const s=new Date(rangeStart);const e=new Date(rangeEnd+"T23:59:59Z");
         const d=anchorDate(it);return d>=s&&d<=e;
       }
-      // filterMode definido mas sem parâmetros suficientes → não exibe nada
       return false;
     };
 
-    // Conjuntos únicos por board (rawItems já está deduplicado)
-    // Apenas itens com pelo menos 1 valor preenchido
-    const venFilt  = rawItems.filter(i=>i.board_id===venB?.id && inPeriod(i) && isPreenchido(i.id));
-    const negAll   = rawItems.filter(i=>i.board_id===negB?.id && isPreenchido(i.id));   // sem filtro data — proposta na rua
-    const negFilt  = rawItems.filter(i=>i.board_id===negB?.id && inPeriod(i) && isPreenchido(i.id));
-    const preAll   = rawItems.filter(i=>i.board_id===preB?.id && isPreenchido(i.id));   // sem filtro — MQL total
-    const preFilt  = rawItems.filter(i=>i.board_id===preB?.id && inPeriod(i) && isPreenchido(i.id));
-    const venAll8m = rawItems.filter(i=>i.board_id===venB?.id && isPreenchido(i.id));   // sem filtro data — gráfico 8 meses
+    // ── Vendas: separa venda de verdade de registro que não é venda
+    const ehVenda=it=>!PLANOS_NAO_VENDA.includes(String(gV(it.id,venPlanoC?.id)||"").trim());
+    const venTodas   = rawItems.filter(i=>i.board_id===venB?.id && isPreenchido(i.id));
+    const venFiltAll = venTodas.filter(inPeriod);
+    const venFilt    = venFiltAll.filter(ehVenda);                 // vendas reais no período
+    const venNaoVenda= venFiltAll.filter(i=>!ehVenda(i));           // ex.: Potencializa Amazon
+    const venSemData = venFilt.filter(i=>!temDataEntrada(i));       // contadas por fallback
+    const venAll8m   = venTodas.filter(ehVenda);
 
-    // ── Métricas financeiras (todas vindas do quadro Vendas) ──────────────────
+    const negAll  = rawItems.filter(i=>i.board_id===negB?.id && isPreenchido(i.id));
+    const negFilt = negAll.filter(inPeriod);
+    const preAll  = rawItems.filter(i=>i.board_id===preB?.id && isPreenchido(i.id));
+    const preFilt = preAll.filter(inPeriod);
+
+    // ── Financeiro (Vendas reais)
     const receitaEfetiva=venFilt.reduce((s,it)=>s+(parseFloat(gV(it.id,venValC?.id))||0),0);
     const mrr=venFilt.reduce((s,it)=>{
       const v=parseFloat(gV(it.id,venValC?.id))||0;
       const p=parseFloat(gV(it.id,venParC?.id))||1;
       return s+(p>0?v/p:0);
     },0);
-    // Ticket médio = receita / nº de vendas com valor > 0
     const venComValor=venFilt.filter(it=>(parseFloat(gV(it.id,venValC?.id))||0)>0);
     const ticketMedio=venComValor.length>0?receitaEfetiva/venComValor.length:0;
-    // Valor médio fechado = média das vendas no board Vendas (não Negociações)
-    const valMedioFechados=venComValor.length>0?receitaEfetiva/venComValor.length:0;
 
-    // ── Proposta na rua (estado atual = Negociando, todos, sem filtro data) ─────
-    const propostaNaRua=negAll.filter(it=>(gV(it.id,negEtapaC?.id)||"")==="Negociando")
-      .reduce((s,it)=>s+(parseFloat(gV(it.id,negValC?.id))||0),0);
+    // ── Proposta na Rua: leads NO GRUPO "Negociando" (estado atual, sem período)
+    const emNegociacao=negAll.filter(it=>etapaDoItem(it)==="Negociando");
+    const propostaNaRua=emNegociacao.reduce((s,it)=>s+(parseFloat(gV(it.id,negValC?.id))||0),0);
 
-    // ── Negócios fechados em Negociações (para funil) ─────────────────────────
-    const negFechadosItems=negFilt.filter(it=>gV(it.id,negEtapaC?.id)==="Negócio Fechado");
+    // ── Negócios Fechados: o registro de fechamento é a venda real no período
+    const negFechados=venFilt.length;
 
-    // ── Etapas ────────────────────────────────────────────────────────────────
-    const etapaOpts=negEtapaC?.config?.options||[];
+    // ── Etapas (Negociações entradas no período), por GRUPO
     const etapasMap={};
-    // Apenas itens que têm etapa definida
-    negFilt.filter(it=>!!gV(it.id,negEtapaC?.id)).forEach(it=>{
-      const e=gV(it.id,negEtapaC?.id);
-      etapasMap[e]=(etapasMap[e]||0)+1;
-    });
-    const etapasData=etapaOpts.length
-      ?etapaOpts.map(o=>({label:o.label,value:etapasMap[o.label]||0,color:o.color})).filter(x=>x.value>0)
-      :Object.entries(etapasMap).map(([k,v])=>({label:k,value:v,color:"#3145FF"}));
+    negFilt.forEach(it=>{const e=etapaDoItem(it);if(e){etapasMap[e]=(etapasMap[e]||0)+1;}});
+    const corEtapa={"Oportunidades Closer":"#3145FF","Negociando":"#d97706","Fechado/Ganho":"#059669","Não comparecido":"#7c3aed","Recusado/Negócio Futuro":"#dc2626","(sem etapa)":"#94a3b8"};
+    const etapasData=Object.entries(etapasMap)
+      .map(([label,value])=>({label,value,color:corEtapa[label]||"#7c3aed",ordem:etapaOrdem[label]??99}))
+      .sort((a,b)=>a.ordem-b.ordem);
 
-    // ── Origens ───────────────────────────────────────────────────────────────
-    const oriOpts=negOriC?.config?.options||[];
+    // ── Origens de LEAD: Pré-Vendas no período (onde a origem é capturada)
+    const oriOpts=preOriC?.config?.options||[];
     const oriMap={};
-    // Apenas itens com origem definida
-    negFilt.filter(it=>!!gV(it.id,negOriC?.id)).forEach(it=>{
-      const o=gV(it.id,negOriC?.id);
-      oriMap[o]=(oriMap[o]||0)+1;
-    });
+    preFilt.filter(it=>!!gV(it.id,preOriC?.id)).forEach(it=>{const o=gV(it.id,preOriC?.id);oriMap[o]=(oriMap[o]||0)+1;});
     const totalOri=Object.values(oriMap).reduce((s,v)=>s+v,0)||1;
     const origemData=Object.entries(oriMap).map(([label,value])=>({
       label,value,pct:Math.round((value/totalOri)*100),
       color:oriOpts.find(o=>o.label===label)?.color||"#94a3b8"
     })).sort((a,b)=>b.value-a.value);
 
-    // ── MQL (todos os leads de Pré-Vendas, sem filtro de data) ───────────────
+    // ── MQL: Pré-Vendas NO PERÍODO (antes ignorava o filtro)
     let mqlQ=0,mqlDQ=0;
-    preAll.forEach(it=>{
+    preFilt.forEach(it=>{
       const m=gV(it.id,preMqlC?.id);
       if(m==="Qualificado")mqlQ++;
       else if(m==="Desqualificado"||m==="Não Qualificado")mqlDQ++;
     });
 
-    // ── Receita por mês (últimos 8 meses, board Vendas) ───────────────────────
+    // ── Receita por mês (últimos 8 meses, vendas reais)
     const mesMap={};
     const now=new Date();
     for(let i=7;i>=0;i--){
       const d=new Date(now.getFullYear(),now.getMonth()-i,1);
-      const k=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
-      mesMap[k]=0;
+      mesMap[`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`]=0;
     }
     venAll8m.forEach(it=>{
       const d=anchorDate(it);
@@ -5733,23 +5747,24 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
     });
     const receitaMesData=Object.entries(mesMap).map(([k,value])=>({label:k.slice(5),fullLabel:k,value,highlight:k===selMonth}));
 
-    // ── Taxa de conversão: Vendas realizadas / Leads Pré-Vendas × 100 ─────────
-    // Definição clara: de cada 100 leads que entraram no Pré-Vendas no período,
-    // quantos viraram uma venda efetiva no board Vendas?
+    // ── Taxa de conversão: vendas reais ÷ leads de Pré-Vendas, ambos no período
     const totalLeads=preFilt.length;
     const taxaConversao=totalLeads>0?(venFilt.length/totalLeads*100):0;
 
     return{
-      receitaEfetiva,mrr,ticketMedio,valMedioFechados,
-      negFechados:negFechadosItems.length,
-      propostaNaRua,etapasData,origemData,
+      receitaEfetiva,mrr,ticketMedio,
+      negFechados,
+      propostaNaRua,emNegociacaoQtd:emNegociacao.length,
+      etapasData,origemData,
       mqlQ,mqlDQ,receitaMesData,
       totalLeads,taxaConversao,
       venFiltLen:venComValor.length,
+      venNaoVendaLen:venNaoVenda.length,
+      venSemDataLen:venSemData.length,
       negFiltLen:negFilt.length,
-      preAllLen:preAll.length
+      preFiltLen:preFilt.length
     };
-  },[rawItems,rawVals,boards,cols,filterMode,selMonth,rangeStart,rangeEnd]);
+  },[rawItems,rawVals,boards,cols,groups,filterMode,selMonth,rangeStart,rangeEnd]);
 
   const monthOptions=useMemo(()=>{
     const opts=[];const now=new Date();
@@ -5828,6 +5843,11 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
               </div>
             ))}
           </div>
+          {(metrics.venSemDataLen||0)>0&&(
+            <div style={{fontSize:11,color:"#d97706",marginBottom:goal>0?10:0}}>
+              ⚠ {metrics.venSemDataLen} venda(s) deste período sem "Data Entrada": contadas pela data de criação. Preencha a coluna no quadro Vendas para o número refletir a data real.
+            </div>
+          )}
           {goal>0&&<div>
             <div style={{height:10,background:"var(--surface3)",borderRadius:5,overflow:"hidden",marginBottom:6}}>
               <div style={{height:"100%",width:`${Math.min(progresso,100)}%`,background:progresso>=100?"#059669":progresso>=70?"#d97706":"var(--blue)",borderRadius:5,transition:"width .6s ease"}}/>
@@ -5838,14 +5858,14 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
 
         {/* KPIs */}
         <div style={{display:"grid",gridTemplateColumns:gridCols,gap:12,marginBottom:16}}>
-          <KpiCard title="MRR" value={fmtBRL(metrics.mrr||0)} icon="🔄" color="#059669" sub="Média recorrente mensal"/>
-          <KpiCard title="Proposta na Rua" value={fmtBRL(metrics.propostaNaRua||0)} icon="📤" color="#d97706" sub="Negociando (em aberto, todos)" badge={{label:"Ativo",color:"#d97706",bg:"#d9770620"}}/>
-          <KpiCard title="Ticket Médio" value={fmtBRL(metrics.ticketMedio||0)} icon="💰" color="#7c3aed" sub={`${metrics.venFiltLen||0} vendas no período`}/>
-          <KpiCard title="Valor Médio Fechado" value={fmtBRL(metrics.valMedioFechados||0)} icon="🤝" color="#0891b2" sub={`${metrics.negFechados||0} negócios fechados`}/>
+          <KpiCard title="Receita Mensal das Vendas" value={fmtBRL(metrics.mrr||0)} icon="🔄" color="#059669" sub="Soma de valor ÷ parcelas das vendas do período"/>
+          <KpiCard title="Proposta na Rua" value={fmtBRL(metrics.propostaNaRua||0)} icon="📤" color="#d97706" sub={`${metrics.emNegociacaoQtd||0} leads no grupo Negociando (hoje, sem período)`} badge={{label:"Ativo",color:"#d97706",bg:"#d9770620"}}/>
+          <KpiCard title="Ticket Médio" value={fmtBRL(metrics.ticketMedio||0)} icon="💰" color="#7c3aed" sub={`${metrics.venFiltLen||0} vendas com valor no período`}/>
+          <KpiCard title="Negócios Fechados" value={metrics.negFechados||0} icon="🏆" color="#0891b2" sub={`Vendas no período${metrics.venNaoVendaLen?` · +${metrics.venNaoVendaLen} Potencializa (não contam)`:""}`}/>
           <KpiCard title="Total Leads" value={metrics.totalLeads||0} icon="👥" color="#3145FF" sub="Pré-Vendas no período"/>
-          <KpiCard title="Taxa de Conversão" value={`${(metrics.taxaConversao||0).toFixed(1)}%`} icon="📈" color="#059669" sub="Leads → Negócio Fechado"/>
-          <KpiCard title="MQL Qualificados" value={metrics.mqlQ||0} icon="✅" color="#059669" sub={`De ${(metrics.mqlQ||0)+(metrics.mqlDQ||0)} avaliados`} progress={(metrics.mqlQ||0)+(metrics.mqlDQ||0)>0?((metrics.mqlQ||0)/((metrics.mqlQ||0)+(metrics.mqlDQ||0)))*100:null}/>
-          <KpiCard title="Negócios Fechados" value={metrics.negFechados||0} icon="🏆" color="#059669" sub="Negociações no período"/>
+          <KpiCard title="Taxa de Conversão" value={`${(metrics.taxaConversao||0).toFixed(1)}%`} icon="📈" color="#059669" sub="Vendas ÷ leads, ambos no período"/>
+          <KpiCard title="MQL Qualificados" value={metrics.mqlQ||0} icon="✅" color="#059669" sub={`De ${(metrics.mqlQ||0)+(metrics.mqlDQ||0)} avaliados no período`} progress={(metrics.mqlQ||0)+(metrics.mqlDQ||0)>0?((metrics.mqlQ||0)/((metrics.mqlQ||0)+(metrics.mqlDQ||0)))*100:null}/>
+          <KpiCard title="Em Negociação" value={metrics.negFiltLen||0} icon="🤝" color="#7c3aed" sub="Leads que entraram em Negociações no período"/>
         </div>
 
         {/* Gráficos linha 1 */}
@@ -5865,7 +5885,7 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
             ):<div style={{color:"var(--text3)",fontSize:13,textAlign:"center",padding:"20px 0"}}>Sem dados</div>}
           </ChartCard>
 
-          <ChartCard title="🌐 Origens de Lead" subtitle="Negociações — distribuição">
+          <ChartCard title="🌐 Origens de Lead" subtitle="Pré-Vendas no período — onde o lead entrou">
             {(metrics.origemData||[]).length>0?(
               <div style={{display:"flex",gap:12,alignItems:"flex-start",flexWrap:"wrap"}}>
                 <DonutSVG segments={metrics.origemData||[]} size={isMobile?90:110}/>
@@ -5882,7 +5902,7 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
             ):<div style={{color:"var(--text3)",fontSize:13,textAlign:"center",padding:"20px 0"}}>Sem dados de origem</div>}
           </ChartCard>
 
-          <ChartCard title="🔄 Etapas — Negociações" subtitle="Leads por etapa no período">
+          <ChartCard title="🔄 Etapas — Negociações" subtitle="Grupo atual dos leads que entraram no período">
             {(metrics.etapasData||[]).length>0?<HBarSVG items={metrics.etapasData||[]}/>:<div style={{color:"var(--text3)",fontSize:13,textAlign:"center",padding:"20px 0"}}>Sem dados de etapas</div>}
           </ChartCard>
 
@@ -5891,15 +5911,15 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
         {/* Gráficos linha 2 */}
         <div style={{display:"grid",gridTemplateColumns:width>=1024?"repeat(2,1fr)":"1fr",gap:16,marginBottom:16}}>
 
-          <ChartCard title="🎯 MQL — Qualificação (Pré-Vendas)" subtitle="Todos os leads avaliados">
+          <ChartCard title="🎯 MQL — Qualificação (Pré-Vendas)" subtitle="Leads do período">
             <div style={{display:"flex",alignItems:"center",gap:20,flexWrap:"wrap"}}>
               <DonutSVG segments={[
                 {label:"Qualificado",value:metrics.mqlQ||0,color:"#059669"},
                 {label:"Desqualificado",value:metrics.mqlDQ||0,color:"#dc2626"},
-                {label:"Sem avaliação",value:Math.max((metrics.preAllLen||0)-(metrics.mqlQ||0)-(metrics.mqlDQ||0),0),color:"var(--border)"}
+                {label:"Sem avaliação",value:Math.max((metrics.preFiltLen||0)-(metrics.mqlQ||0)-(metrics.mqlDQ||0),0),color:"var(--border)"}
               ]} size={100}/>
               <div style={{flex:1,display:"flex",flexDirection:"column",gap:10,minWidth:0}}>
-                {[{label:"Qualificados",value:metrics.mqlQ||0,color:"#059669"},{label:"Desqualificados",value:metrics.mqlDQ||0,color:"#dc2626"},{label:"Sem avaliação",value:Math.max((metrics.preAllLen||0)-(metrics.mqlQ||0)-(metrics.mqlDQ||0),0),color:"var(--border)"}].map((row,i)=>(
+                {[{label:"Qualificados",value:metrics.mqlQ||0,color:"#059669"},{label:"Desqualificados",value:metrics.mqlDQ||0,color:"#dc2626"},{label:"Sem avaliação",value:Math.max((metrics.preFiltLen||0)-(metrics.mqlQ||0)-(metrics.mqlDQ||0),0),color:"var(--border)"}].map((row,i)=>(
                   <div key={i} style={{display:"flex",alignItems:"center",gap:10}}>
                     <div style={{width:10,height:10,borderRadius:"50%",background:row.color,flexShrink:0}}/>
                     <div style={{flex:1,fontSize:12,color:"var(--text2)"}}>{row.label}</div>
@@ -5910,40 +5930,13 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
             </div>
           </ChartCard>
 
-          <ChartCard title="🔽 Funil de Conversão" subtitle="Leads → Vendas no período">
+          <ChartCard title="🔽 Funil de Conversão" subtitle="Leads → Negociações → Vendas, todos no período">
             {(()=>{
-              const preB2=boards.find(b=>b.nome==="Pré - Vendas");
-              const negB2=boards.find(b=>b.nome==="Negociações");
-              const venB2=boards.find(b=>b.nome==="Vendas");
-              // Âncora por "Data Entrada" (Vendas/Pré-Vendas); Negociações usa created_at.
-              const venDe2=cols.find(c=>c.board_id===venB2?.id&&c.nome==="Data Entrada"&&c.tipo==="date");
-              const preDe2=cols.find(c=>c.board_id===preB2?.id&&c.nome==="Data Entrada"&&c.tipo==="date");
-              const deColByBoard2={};
-              if(venB2&&venDe2)deColByBoard2[venB2.id]=venDe2.id;
-              if(preB2&&preDe2)deColByBoard2[preB2.id]=preDe2.id;
-              const deVal2={};
-              for(const rv of rawVals){
-                if(rv.column_id===venDe2?.id||rv.column_id===preDe2?.id){
-                  const v=rv.value;deVal2[rv.item_id]=(v&&typeof v==="object"&&"value" in v)?v.value:v;
-                }
-              }
-              const anchorDate2=item=>{
-                const cid=deColByBoard2[item.board_id];
-                const raw=cid?deVal2[item.id]:null;
-                if(typeof raw==="string"&&/^\d{4}-\d{2}-\d{2}/.test(raw)){const[y,m,dd]=raw.slice(0,10).split("-").map(Number);return new Date(y,m-1,dd);}
-                return new Date(item.created_at);
-              };
-              const inPeriod=item=>{
-                if(filterMode==="all") return true;
-                if(filterMode==="month"&&selMonth){const[y,m]=selMonth.split("-");const s=new Date(parseInt(y),parseInt(m)-1,1);const e=new Date(parseInt(y),parseInt(m),1);const d=anchorDate2(item);return d>=s&&d<e;}
-                if(filterMode==="range"&&rangeStart&&rangeEnd){const s=new Date(rangeStart);const e=new Date(rangeEnd+"T23:59:59Z");const d=anchorDate2(item);return d>=s&&d<=e;}
-                return false;
-              };
+              // Usa exatamente as mesmas contagens dos cards, para o funil nunca divergir deles.
               const steps=[
-                {label:"Pré-Vendas (Leads)",value:rawItems.filter(i=>i.board_id===preB2?.id&&inPeriod(i)).length,color:"#3145FF"},
-                {label:"Negociações",value:rawItems.filter(i=>i.board_id===negB2?.id&&inPeriod(i)).length,color:"#7c3aed"},
-                {label:"Negócio Fechado",value:metrics.negFechados||0,color:"#059669"},
-                {label:"Vendas Realizadas",value:rawItems.filter(i=>i.board_id===venB2?.id&&inPeriod(i)).length,color:"#0891b2"},
+                {label:"Pré-Vendas (Leads)",value:metrics.totalLeads||0,color:"#3145FF"},
+                {label:"Entraram em Negociações",value:metrics.negFiltLen||0,color:"#7c3aed"},
+                {label:"Vendas",value:metrics.negFechados||0,color:"#059669"},
               ];
               const maxV=Math.max(...steps.map(s=>s.value),1);
               return(
