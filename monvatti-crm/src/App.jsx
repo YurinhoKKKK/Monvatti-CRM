@@ -2068,7 +2068,8 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
       </td>
       {columns.map(col=>(
         <td key={col.id} style={{padding:"2px 3px",borderRight:"1px solid var(--border)",verticalAlign:"middle",maxWidth:220,overflow:"hidden",
-          ...(stickyFirstCols>0&&columns.indexOf(col)<stickyFirstCols?{position:"sticky",left:(52+columns.slice(0,columns.indexOf(col)).reduce((s,_,i)=>s+(colWidths?.[i]||140),0))+"px",background:"var(--surface)",zIndex:2}:{})}}>
+          ...(stickyFirstCols>0&&columns.indexOf(col)<stickyFirstCols?{position:"sticky",left:(52+columns.slice(0,columns.indexOf(col)).reduce((s,_,i)=>s+(colWidths?.[i]||140),0))+"px",background:rowBg,zIndex:2,
+            ...(columns.indexOf(col)===stickyFirstCols-1?{boxShadow:"4px 0 8px -2px var(--shadow)"}:{})}:{})}}>
           <Cell col={col} item={item} values={item.values} allColumns={columns}
             responsibles={item.responsibles} respByCol={item.respByCol} allUsers={allUsers}
             onChange={v=>onUpdateValue(col.id,v)} onRespChange={onRespChange}/>
@@ -2373,6 +2374,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                           transition:"color .15s",position:stickyFirstCols>0&&columns.indexOf(col)<stickyFirstCols?"sticky":"relative",
                           left:stickyFirstCols>0&&columns.indexOf(col)<stickyFirstCols?(52+columns.slice(0,columns.indexOf(col)).reduce((s,c,i)=>s+colWidths[i],0))+"px":undefined,
                           zIndex:stickyFirstCols>0&&columns.indexOf(col)<stickyFirstCols?3:undefined,
+                          boxShadow:stickyFirstCols>0&&columns.indexOf(col)===stickyFirstCols-1?"4px 0 8px -2px var(--shadow)":undefined,
                           overflow:"visible"}}>
                         <div onClick={cycleSort} style={{display:"flex",alignItems:"center",gap:4,overflow:"hidden"}}
                           onMouseEnter={e=>{if(!isActive)e.currentTarget.parentElement.style.color="var(--text2)";}}
@@ -4056,7 +4058,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
                 onSendTimer={isVendas&&perms.sendToVendas?abrirEnvioTimer:null}
                 sentToNegIds={sentToNegIds} sentLabel={sentLabel}
                 sortCfg={sortCfg} setSortCfg={setSortCfg}
-                stickyFirstCols={isVendas?2:0}
+                stickyFirstCols={isVendas?3:0}
                 onDragStart={handleDragStart} onDragOver={e=>handleGroupDragOver(e,group.id)} onDrop={e=>handleGroupDrop(e,group.id)}
                 onItemDragOver={handleItemDragOver} onItemDrop={handleItemDrop}
                 onGroupSettings={perms.isFull||perms.all?()=>setGroupSettingsM(group):null}
