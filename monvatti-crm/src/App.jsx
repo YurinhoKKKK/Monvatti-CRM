@@ -1445,6 +1445,13 @@ function TimerIntakeModal({item,board,allUsers=[],onClose,onSent}) {
   const colValor=(board.columns||[]).find(c=>c.nome==="Valor do Projeto");
   const colParcelas=(board.columns||[]).find(c=>c.nome==="Parcelas");
   const colCloser=(board.columns||[]).find(c=>c.tipo==="user"&&c.nome==="Closer");
+  // Nome fantasia = coluna "Empresa" do item (trim; omitido do envio se vazio)
+  const colEmpresa=(board.columns||[]).find(c=>c.nome==="Empresa");
+  const nomeFantasia=(()=>{
+    const v=colEmpresa?item.values?.[colEmpresa.id]:null;
+    const t=typeof v==="string"?v.trim():"";
+    return t||null;
+  })();
   const valorProjeto=(()=>{
     const bruto=colValor?item.values?.[colValor.id]:null;
     if(bruto==null||bruto==="") return null;
@@ -1564,6 +1571,7 @@ function TimerIntakeModal({item,board,allUsers=[],onClose,onSent}) {
         project_value:valorProjeto??undefined,
         installments:parcelas??undefined,
         closer_name:closerNome??undefined,
+        nome_fantasia:nomeFantasia??undefined,
       };
       const {data,error}=await db.functions.invoke("crm-timer",{body:{action:"create",payload}});
       // Em resposta com status de erro, o cliente Supabase devolve data vazio e
