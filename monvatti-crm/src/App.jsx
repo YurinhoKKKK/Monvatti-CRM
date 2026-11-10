@@ -1445,13 +1445,14 @@ function TimerIntakeModal({item,board,allUsers=[],onClose,onSent}) {
   const colValor=(board.columns||[]).find(c=>c.nome==="Valor do Projeto");
   const colParcelas=(board.columns||[]).find(c=>c.nome==="Parcelas");
   const colCloser=(board.columns||[]).find(c=>c.tipo==="user"&&c.nome==="Closer");
-  // Nome fantasia = coluna "Empresa" do item (trim; omitido do envio se vazio)
+  // Nome fantasia: campo do formulário, obrigatório, pré-preenchido com a coluna
+  // "Empresa" do item quando ela tiver valor. Editável aqui, como a razão social.
   const colEmpresa=(board.columns||[]).find(c=>c.nome==="Empresa");
-  const nomeFantasia=(()=>{
+  const fantasiaInicial=(()=>{
     const v=colEmpresa?item.values?.[colEmpresa.id]:null;
-    const t=typeof v==="string"?v.trim():"";
-    return t||null;
+    return typeof v==="string"?v.trim():"";
   })();
+  const [fantasia,setFantasia]=useState(fantasiaInicial);
   const valorProjeto=(()=>{
     const bruto=colValor?item.values?.[colValor.id]:null;
     if(bruto==null||bruto==="") return null;
@@ -1504,6 +1505,7 @@ function TimerIntakeModal({item,board,allUsers=[],onClose,onSent}) {
   const faltando=[
     !numero&&"Número do cliente (coluna Código)",
     !razao.trim()&&"Razão social",
+    !fantasia.trim()&&"Nome fantasia",
     (!soDigitos(cnpj)&&"CNPJ")||(!cnpjValido(cnpj)&&"CNPJ válido (dígitos verificadores)"),
     !contato.trim()&&"Nome do contato",
     !modelo&&"Modelo do projeto",
@@ -1571,7 +1573,7 @@ function TimerIntakeModal({item,board,allUsers=[],onClose,onSent}) {
         project_value:valorProjeto??undefined,
         installments:parcelas??undefined,
         closer_name:closerNome??undefined,
-        nome_fantasia:nomeFantasia??undefined,
+        nome_fantasia:fantasia.trim()||undefined,
       };
       const {data,error}=await db.functions.invoke("crm-timer",{body:{action:"create",payload}});
       // Em resposta com status de erro, o cliente Supabase devolve data vazio e
@@ -1657,6 +1659,10 @@ function TimerIntakeModal({item,board,allUsers=[],onClose,onSent}) {
 
       <CampoTimer label="Razão social *">
         <input value={razao} onChange={e=>setRazao(e.target.value)} style={T.inp} maxLength={200}/>
+      </CampoTimer>
+      <CampoTimer label="Nome fantasia *" obs={!colEmpresa?"Coluna \"Empresa\" não encontrada neste quadro; preencha manualmente.":undefined}>
+        <input value={fantasia} onChange={e=>setFantasia(e.target.value)} style={T.inp} maxLength={200}
+          placeholder="Nome pelo qual a empresa é conhecida"/>
       </CampoTimer>
       <CampoTimer label="CNPJ *" obs={soDigitos(cnpj)&&!cnpjValido(cnpj)?"Dígitos verificadores não conferem.":undefined}>
         <input value={cnpj} onChange={e=>setCnpj(formataCNPJ(e.target.value))}
@@ -3856,6 +3862,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     }
   };
   const isVendas         = board?.nome==="Vendas";            // filtro de período
+  const isInativa        = board?.nome==="Base Inativa";      // SDR vê todos os grupos aqui
   const canActions       = isPreVendas;                       // mover inativa habilitado no Pré-Vendas
 
   // ── Hierarquia de grupos
@@ -3867,7 +3874,9 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
 
     if(!isNegociacoes){
       let gs=board.groups;
-      if(perms.slug==="sdr") gs=gs.filter(g=>g.owner_id===currentUser?.id);
+      // SDR vê só os grupos dos quais é dono, EXCETO na Base Inativa: lá vê tudo
+      // (o grupo único da Base Inativa não tem dono, e ficava invisível ao SDR).
+      if(perms.slug==="sdr"&&!isInativa) gs=gs.filter(g=>g.owner_id===currentUser?.id);
       else if(perms.slug==="closer") gs=gs.filter(g=>(groupAccess[g.id]||[]).includes(currentUser?.id));
       // Para Vendas: aplica filtro de período adicional.
       // Âncora = valor da coluna "Data Entrada" (e NÃO o created_at, que é quando o lead
@@ -3930,7 +3939,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     });
 
     return [...enriched,...legacyFiltered.map(g=>({...g,items:applyFilters(g.items||[])}))];
-  },[board,perms,currentUser,groupAccess,isNegociacoes,isVendas,filters,search,sortCfg,vendasFilter]);
+  },[board,perms,currentUser,groupAccess,isNegociacoes,isVendas,isInativa,filters,search,sortCfg,vendasFilter]);
   const filterCount=(filters.status?.length||0)+(filters.resp?.length||0)+(!isVendas&&filters.dateFrom?1:0)+(!isVendas&&filters.dateTo?1:0)+(!isVendas&&filters.month?1:0)+(search.trim()?1:0);
 
   if(loading) return <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}><Spinner size={40}/><span style={{color:"var(--text3)",fontSize:14}}>Carregando…</span></div>;
