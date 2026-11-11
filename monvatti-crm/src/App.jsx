@@ -2034,7 +2034,7 @@ function ItemMenuOpt({icon,label,onClick,danger=false}) {
 
 function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,
   onDragStart,onDragOver,onDrop,onUpdateValue,onRespChange,sentToNegIds=new Set(),stickyFirstCols=0,colWidths=null,
-  siblingStages=null,onMoveStage=null,sentLabel="Negociações",onSendTimer=null}) {
+  siblingStages=null,onMoveStage=null,sentLabel="Negociações",onSendTimer=null,onReativar=null}) {
   const [hov,setHov]=useState(false);
   const [menu,setMenu]=useState(false);
   const [menuPos,setMenuPos]=useState({top:0,right:0});
@@ -2099,6 +2099,7 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
             boxShadow:"0 12px 48px var(--shadowMd)",minWidth:240,padding:7}}>
             {onDupNeg&&<ItemMenuOpt icon="📋" label="Duplicar → Negociação" onClick={()=>{setMenu(false);onDupNeg();}}/>}
             {onMoveInativa&&<ItemMenuOpt icon="📁" label="Mover para Base Inativa" onClick={()=>{setMenu(false);onMoveInativa();}}/>}
+            {onReativar&&<ItemMenuOpt icon="↩️" label="Reativar → Pré-Vendas" onClick={()=>{setMenu(false);onReativar();}}/>}
             {onSendToNeg&&(
               alreadySent
                 ? <ItemMenuOpt icon="🔁" label="Reenviar para Negociações" onClick={()=>{setMenu(false);onSendToNeg();}}/>
@@ -2240,7 +2241,8 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
   onToggleItem,onSelectAll,onAddItem,onDelGroup,onRenameGroup,onToggle,
   onOpenItem,onUpdateValue,onRespChange,onDelItem,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,onSendTimer,
   onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,sentToNegIds=new Set(),sentLabel="Negociações",
-  sortCfg={colId:null,dir:1},setSortCfg=()=>{},stickyFirstCols=0,siblingStages=null,onMoveStage=null}) {
+  sortCfg={colId:null,dir:1},setSortCfg=()=>{},stickyFirstCols=0,siblingStages=null,onMoveStage=null,onReativar=null,
+  onGroupDragStart=null,onGroupDragEnd=null,canReorderGroups=false}) {
   const [renaming,setRenaming]=useState(false);
   const [gname,setGname]=useState(group.nome);
   const [localCollapsed,setLocalCollapsed]=useState(true); // inicia minimizado
@@ -2332,6 +2334,11 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
           {/* Linha do grupo */}
           <div style={{display:"flex",alignItems:"center",gap:9,padding:"10px 14px",
             background:"var(--surface)",borderLeft:`4px solid ${group.color}`,minWidth:totalW}}>
+            {canReorderGroups&&onGroupDragStart&&(
+              <span draggable title="Arraste para reordenar os grupos"
+                onDragStart={e=>onGroupDragStart(e,group.id)} onDragEnd={onGroupDragEnd||undefined}
+                style={{cursor:"grab",color:"var(--text3)",fontSize:15,lineHeight:1,userSelect:"none",flexShrink:0}}>⠿</span>
+            )}
             <button onClick={toggleCollapsed}
               style={{background:"none",border:"none",cursor:"pointer",fontSize:11,color:group.color,
                 padding:0,transform:isCollapsed?"rotate(-90deg)":"none",transition:"transform .2s",lineHeight:1,flexShrink:0}}>▼</button>
@@ -2461,6 +2468,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                         onOpen={()=>onOpenItem(item)}
                         onDelete={()=>onDelItem(item.id)}
                         onMoveInativa={onMoveInativa?()=>onMoveInativa(item):null}
+                        onReativar={onReativar?()=>onReativar(item):null}
                         onDupNeg={onDupNeg?()=>onDupNeg(item):null}
                         onSendToNeg={onSendToNeg?()=>onSendToNeg(item):null}
                         onSendToVendas={onSendToVendas?()=>onSendToVendas(item):null}
@@ -2757,7 +2765,8 @@ function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedIt
   onUpdateValue,onRespChange,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,onSendTimer,sentToNegIds=new Set(),sentLabel="Negociações",
   sortCfg={colId:null,dir:1},setSortCfg=()=>{},
   onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,
-  onRenameSubGroup,onDelSubGroup,onEditParent,onDelParent,onMoveStage}) {
+  onRenameSubGroup,onDelSubGroup,onEditParent,onDelParent,onMoveStage,
+  onGroupDragStart=null,onGroupDragEnd=null,canReorderGroups=false}) {
 
   const [collapsed,setCollapsed]=useState(true);  // inicia minimizado
   // Estado local de colapso por sub-grupo (id → bool) — inicia minimizado
@@ -2784,7 +2793,14 @@ function ParentGroupContainer({parentGroup,subGroups,columns,allUsers,selectedIt
       {/* Header do grupo mãe */}
       <div style={{display:"flex",alignItems:"center",gap:10,padding:"12px 16px",
         background:`${color}12`,borderLeft:`5px solid ${color}`,cursor:"pointer"}}
-        onClick={()=>!renaming&&setCollapsed(p=>!p)}>
+        onClick={()=>!renaming&&setCollapsed(p=>!p)}
+        onDragOver={e=>onDragOver&&onDragOver(e,parentGroup.id)} onDrop={e=>onDrop&&onDrop(e,parentGroup.id)}>
+        {canReorderGroups&&onGroupDragStart&&(
+          <span draggable title="Arraste para reordenar os closers"
+            onClick={e=>e.stopPropagation()}
+            onDragStart={e=>onGroupDragStart(e,parentGroup.id)} onDragEnd={onGroupDragEnd||undefined}
+            style={{cursor:"grab",color:"var(--text3)",fontSize:16,lineHeight:1,userSelect:"none",flexShrink:0}}>⠿</span>
+        )}
         <button onClick={e=>{e.stopPropagation();setCollapsed(p=>!p);}}
           style={{background:"none",border:"none",cursor:"pointer",fontSize:13,color,padding:0,
             transform:collapsed?"rotate(-90deg)":"none",transition:"transform .2s",lineHeight:1,flexShrink:0}}>▼</button>
@@ -3405,6 +3421,23 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     await db.from("item_updates").insert(upds.map(u=>({item_id:tgtItemId,content:u.content,created_by:u.created_by})));
   };
 
+  // Núcleo de "mover de verdade" para outro quadro: cria o item no destino com
+  // valores, responsáveis e atualizações, e só então exclui o original.
+  // Usado pela Base Inativa (ida) e pela reativação (volta ao Pré-Vendas).
+  const _moveToBoardCore=async(gid,item,destBoard,destGroup)=>{
+    const {data:newItem}=await db.from("items").insert({board_id:destBoard.id,group_id:destGroup.id,ordem:9999}).select().single();
+    if(!newItem){toast("Erro ao mover","error");return false;}
+    const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",destBoard.id);
+    await copyMatchingValues(item.id,board.columns,newItem.id,tgtCols||[]);
+    await copyMatchingResponsables(item.id,board.columns,newItem.id,tgtCols||[]);
+    await copyUpdates(item.id,newItem.id);
+    upd(b=>{const g=b.groups.find(g=>g.id===gid);if(g)g.items=g.items.filter(i=>i.id!==item.id);});
+    if(selItem?.id===item.id)setSelItem(null);
+    bump(boardId,-1);bump(destBoard.id,1);
+    await db.from("items").delete().eq("id",item.id);
+    await logAct(currentUser?.id,wsId,"item",item.id,"moved",{to:destBoard.nome,group:destGroup.nome});
+    return true;
+  };
   // Núcleo do "mover para Base Inativa" — sem toast, reutilizado pelo item único e pelo lote
   const _moveToInativaCore=async(gid,item)=>{
     const iBoard=boards.find(b=>b.nome==="Base Inativa");
@@ -3413,23 +3446,41 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     const isTraf=board?.nome==="Tráfego";
     const tg=isTraf?tgs?.find(g=>g.nome==="Tráfego"):tgs?.find(g=>g.nome==="Prospecção Fria")||tgs?.[0];
     if(!tg){toast("Grupo destino não encontrado","error");return false;}
-    // Cria novo item no destino
-    const {data:newItem}=await db.from("items").insert({board_id:iBoard.id,group_id:tg.id,ordem:9999}).select().single();
-    if(!newItem){toast("Erro ao mover","error");return false;}
-    // Copia campos equivalentes
-    const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",iBoard.id);
-    await copyMatchingValues(item.id,board.columns,newItem.id,tgtCols||[]);
-    // Copia responsáveis
-    await copyMatchingResponsables(item.id,board.columns,newItem.id,tgtCols||[]);
-    // Copia atualizações
-    await copyUpdates(item.id,newItem.id);
-    // Exclui original
-    upd(b=>{const g=b.groups.find(g=>g.id===gid);if(g)g.items=g.items.filter(i=>i.id!==item.id);});
-    if(selItem?.id===item.id)setSelItem(null);
-    bump(boardId,-1);bump(iBoard.id,1);
-    await db.from("items").delete().eq("id",item.id);
-    await logAct(currentUser?.id,wsId,"item",item.id,"moved",{to:"Base Inativa"});
-    return true;
+    return _moveToBoardCore(gid,item,iBoard,tg);
+  };
+
+  // ── Reativar lead: Base Inativa → Pré-Vendas (move real, com escolha de grupo).
+  // SDR só pode escolher entre os grupos dos quais é dono no Pré-Vendas; os demais
+  // cargos escolhem qualquer grupo. Único destino permitido: Pré-Vendas.
+  const abrirReativar=async(alvos)=>{ // alvos = [{gid,item}]
+    if(!alvos.length) return;
+    const pBoard=(allBoardsRaw||boards).find(b=>b.nome==="Pré - Vendas");
+    if(!pBoard){toast("Quadro 'Pré - Vendas' não encontrado","error");return;}
+    const {data:pgs}=await db.from("groups").select("*").eq("board_id",pBoard.id).order("ordem");
+    let destinos=pgs||[];
+    if(perms.slug==="sdr") destinos=destinos.filter(g=>g.owner_id===currentUser?.id);
+    if(!destinos.length){
+      toast(perms.slug==="sdr"?"Você ainda não tem um grupo próprio no Pré-Vendas. Peça ao gestor para criar um.":"Nenhum grupo encontrado no Pré-Vendas","error");
+      return;
+    }
+    setGroupSelM({
+      title:`Reativar ${alvos.length} lead(s) → Pré-Vendas: escolha o grupo`,
+      groups:destinos,
+      onSelect:async(g)=>{
+        setGroupSelM(null);
+        setSelected(new Set());
+        let ok=0;
+        for(const a of alvos){ if(await _moveToBoardCore(a.gid,a.item,pBoard,g)) ok++; }
+        toast(`${ok} lead(s) reativado(s) em "${g.nome}"`+(ok<alvos.length?` · ${alvos.length-ok} com erro`:""), ok?"success":"error");
+      },
+    });
+  };
+  const reativarLead=(gid,item)=>abrirReativar([{gid,item}]);
+  const bulkReativar=()=>{
+    const ids=[...selected];
+    const alvos=[];
+    board.groups.forEach(g=>(g.items||[]).forEach(it=>{ if(ids.includes(it.id)) alvos.push({gid:g.id,item:it}); }));
+    abrirReativar(alvos);
   };
   const moveInativa=async(gid,item)=>{
     const ok=await _moveToInativaCore(gid,item);
@@ -3705,9 +3756,55 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     });
     await db.from("items").update({group_id:tgtGroupId,ordem:9999}).eq("id",item.id);
   };
+  // ── Reordenação de grupos por arrastar (alça ⠿ no cabeçalho do grupo).
+  // Só entre irmãos do mesmo nível: grupos soltos entre si (Pré-Vendas, Vendas,
+  // Base Inativa) ou grupos mãe entre si (Negociações). Sub-grupos (etapas) NÃO
+  // são reordenáveis: a "ordem" deles identifica a etapa entre todos os closers
+  // (ver stageOptions), e mexer nela quebraria o "Mover para etapa".
+  const groupDragRef=useRef(null);
+  const canReorderGroups=!!(perms.all||perms.manageBoards||perms.createGroups);
+  const nivelGrupo=g=>g.is_parent?"mae":g.parent_group_id?"sub":"solto";
+  const handleGroupHandleDragStart=(e,gid)=>{
+    e.stopPropagation();
+    groupDragRef.current=gid;
+    e.dataTransfer.effectAllowed="move";
+    try{e.dataTransfer.setData("text/plain",gid);}catch{/* alguns navegadores exigem setData para iniciar o arrasto */}
+  };
+  const handleGroupHandleDragEnd=()=>{groupDragRef.current=null;setDragOverGroup(null);};
+  const reorderGroups=async(srcGid,tgtGid)=>{
+    if(!board||srcGid===tgtGid) return;
+    const src=board.groups.find(g=>g.id===srcGid), tgt=board.groups.find(g=>g.id===tgtGid);
+    if(!src||!tgt) return;
+    const nivel=nivelGrupo(src);
+    if(nivel==="sub"||nivel!==nivelGrupo(tgt)){toast("Só é possível reordenar grupos do mesmo nível","warning");return;}
+    const irmaos=board.groups.filter(g=>nivelGrupo(g)===nivel).sort((a,b)=>a.ordem-b.ordem);
+    const from=irmaos.findIndex(g=>g.id===srcGid), to=irmaos.findIndex(g=>g.id===tgtGid);
+    if(from<0||to<0) return;
+    const nova=[...irmaos]; nova.splice(to,0,nova.splice(from,1)[0]);
+    const ordemPor=Object.fromEntries(nova.map((g,idx)=>[g.id,idx]));
+    // Atualiza local: aplica a nova ordem e reposiciona os irmãos nos lugares que já ocupavam
+    upd(b=>{
+      const slots=[]; b.groups.forEach((g,i)=>{ if(ordemPor[g.id]!=null) slots.push(i); });
+      const reordenados=b.groups.filter(g=>ordemPor[g.id]!=null).sort((a,c)=>ordemPor[a.id]-ordemPor[c.id]);
+      reordenados.forEach(g=>{g.ordem=ordemPor[g.id];});
+      slots.forEach((pos,k)=>{ b.groups[pos]=reordenados[k]; });
+    });
+    const results=await Promise.all(nova.map((g,idx)=>db.from("groups").update({ordem:idx}).eq("id",g.id)));
+    if(results.some(r=>r.error)) toast("A nova ordem não foi salva por completo. Recarregue o quadro.","error");
+  };
   const handleGroupDrop=async(e,tgtGid)=>{
     e.preventDefault();
+    // Arrasto de GRUPO (alça do cabeçalho) tem prioridade sobre arrasto de item
+    if(groupDragRef.current){
+      const srcGid=groupDragRef.current;
+      groupDragRef.current=null;
+      setDragState(null);setDragOverGroup(null);
+      await reorderGroups(srcGid,tgtGid);
+      return;
+    }
     if(!dragState||dragState.srcGroupId===tgtGid){setDragState(null);setDragOverGroup(null);return;}
+    // Item nunca cai dentro de um grupo mãe (só em sub-grupos ou grupos soltos)
+    if(board?.groups.find(g=>g.id===tgtGid)?.is_parent){setDragState(null);setDragOverGroup(null);return;}
     const {srcGroupId,item}=dragState;
     setDragState(null);setDragOverGroup(null);
     await moveItemToGroup(item,srcGroupId,tgtGid);
@@ -4054,7 +4151,9 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
                 onDelSubGroup={gid=>delGroup(gid)}
                 onEditParent={pg=>setParentGroupM(pg)}
                 onDelParent={pgid=>delParentGroup(pgid)}
-                onMoveStage={(item,srcGid,tgtGid)=>moveItemToGroup(item,srcGid,tgtGid)}/>
+                onMoveStage={(item,srcGid,tgtGid)=>moveItemToGroup(item,srcGid,tgtGid)}
+                canReorderGroups={canReorderGroups}
+                onGroupDragStart={handleGroupHandleDragStart} onGroupDragEnd={handleGroupHandleDragEnd}/>
             : <Group key={group.id} group={group} columns={board.columns}
                 items={group.items}
                 isDraggingOver={dragOverGroup===group.id}
@@ -4069,6 +4168,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
                 onRespChange={(iid,colId,ids)=>updateResp(iid,group.id,colId,ids)}
                 onDelItem={iid=>setConfirmM({title:"Excluir item",danger:true,message:"Excluir permanentemente?",onConfirm:()=>{delItem(group.id,iid);setConfirmM(null);}})}
                 onMoveInativa={canActions?item=>moveInativa(group.id,item):null}
+                onReativar={isInativa?item=>reativarLead(group.id,item):null}
                 onDupNeg={null}
                 onSendToNeg={isPreVendas?item=>sendToNeg(group.id,item):null}
                 onSendToVendas={isNegociacoes&&perms.sendToVendas?item=>sendToVendas(group.id,item):null}
@@ -4079,6 +4179,8 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
                 onDragStart={handleDragStart} onDragOver={e=>handleGroupDragOver(e,group.id)} onDrop={e=>handleGroupDrop(e,group.id)}
                 onItemDragOver={handleItemDragOver} onItemDrop={handleItemDrop}
                 onGroupSettings={perms.isFull||perms.all?()=>setGroupSettingsM(group):null}
+                canReorderGroups={canReorderGroups}
+                onGroupDragStart={handleGroupHandleDragStart} onGroupDragEnd={handleGroupHandleDragEnd}
               />
         ))}
         {perms.createGroups&&(
@@ -4128,10 +4230,15 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
           color:"#fff",borderRadius:14,padding:"13px 20px",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",
           boxShadow:"0 12px 48px rgba(0,0,0,.36)",zIndex:1500,whiteSpace:"nowrap",maxWidth:"96vw"}}>
           <span style={{fontSize:14,fontWeight:700}}>{selected.size} item(s)</span>
-          <button onClick={()=>setMoveItemsM(true)}
+          {/* Na Base Inativa, o SDR só pode reativar (→ Pré-Vendas); "Mover para quadro" fica fora para ele */}
+          {!(isInativa&&perms.slug==="sdr")&&<button onClick={()=>setMoveItemsM(true)}
             style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"8px 14px",fontSize:12}}>
             📦 Mover para quadro
-          </button>
+          </button>}
+          {isInativa&&<button onClick={bulkReativar}
+            style={{...T.btn,background:"#16a34a",color:"#fff",padding:"8px 14px",fontSize:12}}>
+            ↩️ Reativar → Pré-Vendas
+          </button>}
           {stageOptions.length>0&&(
             <div style={{position:"relative"}}>
               <button onClick={()=>setStageMenuOpen(p=>!p)}
@@ -4890,17 +4997,19 @@ function Sidebar({boards,currentBoardId,currentUser,wsNome,dark,onToggleDark,per
       </div>
       {/* Boards */}
       <div style={{padding:"14px 14px 6px",flex:1,overflowY:"auto"}}>
-        {/* Dashboard link */}
-        <div onClick={()=>{onDashboard&&onDashboard();if(isMobile)onClose();}}
-          style={{display:"flex",alignItems:"center",gap:9,padding:"9px 11px",borderRadius:9,cursor:"pointer",
-            color:"rgba(255,255,255,.65)",fontSize:13,marginBottom:10,
-            background:"transparent"}}
-          onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.1)"}
-          onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-          <span style={{fontSize:17,flexShrink:0}}>📊</span>
-          <span style={{flex:1}}>Dashboard</span>
-        </div>
-        <div style={{height:1,background:"rgba(255,255,255,.1)",marginBottom:10}}/>
+        {/* Dashboard link (só aparece para cargos com acesso) */}
+        {onDashboard&&<>
+          <div onClick={()=>{onDashboard();if(isMobile)onClose();}}
+            style={{display:"flex",alignItems:"center",gap:9,padding:"9px 11px",borderRadius:9,cursor:"pointer",
+              color:"rgba(255,255,255,.65)",fontSize:13,marginBottom:10,
+              background:"transparent"}}
+            onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.1)"}
+            onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+            <span style={{fontSize:17,flexShrink:0}}>📊</span>
+            <span style={{flex:1}}>Dashboard</span>
+          </div>
+          <div style={{height:1,background:"rgba(255,255,255,.1)",marginBottom:10}}/>
+        </>}
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8,padding:"0 4px"}}>
           <div style={{fontSize:10,color:"rgba(255,255,255,.4)",textTransform:"uppercase",letterSpacing:.7,fontWeight:700}}>Quadros</div>
           <button onClick={onAddBoard} style={{background:"none",border:"none",cursor:"pointer",color:"rgba(255,255,255,.5)",fontSize:22,lineHeight:1}}
@@ -6009,6 +6118,9 @@ function AppContent() {
 
   // Permissões derivadas do cargo do perfil logado
   const perms=useMemo(()=>getPerms(profile),[profile]);
+  // Dashboard: fora do alcance de Closer e SDR (decisão de 11/11). Vale para o
+  // link da barra lateral (cheia e recolhida) e para a própria página.
+  const canDashboard=!["closer","sdr"].includes(perms.slug);
 
   // Boards visíveis conforme privacidade
   const visibleBoards=useMemo(()=>{
@@ -6162,7 +6274,7 @@ function AppContent() {
       onDuplicateBoard={b=>perms.manageBoards&&duplicateBoard(b)}
       onProfile={()=>setPage("profile")}
       onAdmin={()=>setPage("admin")}
-      onDashboard={()=>setPage("dashboard")}
+      onDashboard={canDashboard?()=>setPage("dashboard"):null}
       onLogout={signOut}
       open={sidebarOpen} onClose={()=>setSidebarOpen(false)}
     />
@@ -6190,13 +6302,15 @@ function AppContent() {
               <div style={{width:36,height:36,background:"var(--alt)",borderRadius:10,
                 display:"flex",alignItems:"center",justifyContent:"center",
                 fontWeight:900,fontSize:18,color:"#fff",marginBottom:8,flexShrink:0}}>M</div>
-              <div onClick={()=>setPage("dashboard")} title="Dashboard"
-                style={{width:36,height:36,display:"flex",alignItems:"center",justifyContent:"center",
-                  borderRadius:8,cursor:"pointer",fontSize:18,color:"rgba(255,255,255,.6)",
-                  transition:"background .15s"}}
-                onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.12)"}
-                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>📊</div>
-              <div style={{width:28,height:1,background:"rgba(255,255,255,.1)",margin:"4px 0"}}/>
+              {canDashboard&&<>
+                <div onClick={()=>setPage("dashboard")} title="Dashboard"
+                  style={{width:36,height:36,display:"flex",alignItems:"center",justifyContent:"center",
+                    borderRadius:8,cursor:"pointer",fontSize:18,color:"rgba(255,255,255,.6)",
+                    transition:"background .15s"}}
+                  onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.12)"}
+                  onMouseLeave={e=>e.currentTarget.style.background="transparent"}>📊</div>
+                <div style={{width:28,height:1,background:"rgba(255,255,255,.1)",margin:"4px 0"}}/>
+              </>}
               {visibleBoards.map(b=>(
                 <div key={b.id} onClick={()=>{setBoardId(b.id);setPage("board");}} title={b.nome}
                   style={{width:36,height:36,display:"flex",alignItems:"center",justifyContent:"center",
@@ -6240,8 +6354,13 @@ function AppContent() {
               <button onClick={()=>setPage("board")} style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"9px 20px",marginTop:8}}>Voltar</button>
             </div>
         }
-        {page==="dashboard"&&(
-          <DashboardPage onBack={()=>setPage("board")} wsId={wsId} allUsers={allUsers} perms={perms} profile={profile}/>
+        {page==="dashboard"&&(canDashboard
+          ?<DashboardPage onBack={()=>setPage("board")} wsId={wsId} allUsers={allUsers} perms={perms} profile={profile}/>
+          :<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"var(--text3)",fontSize:14,flexDirection:"column",gap:12}}>
+              <div style={{fontSize:32}}>🔒</div>
+              <div>Sem permissão para acessar esta área.</div>
+              <button onClick={()=>setPage("board")} style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"9px 20px",marginTop:8}}>Voltar</button>
+            </div>
         )}
         {page==="board"&&(
           <BoardView key={boardId} boardId={boardId} boards={visibleBoards} allBoardsRaw={boards} allUsers={allUsers}
