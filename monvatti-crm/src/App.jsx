@@ -909,7 +909,17 @@ function Cell({col,values,allColumns,responsibles,respByCol,allUsers,onChange,on
   switch(col.tipo){
     case "calculated": return <CalcCell values={values} allColumns={allColumns}/>;
     // Coluna nativa: fonte única em items.numero_cliente, nunca em item_values
-    case "numero_cliente": return <EditableCell value={item?.numero_cliente??""} onChange={onChange} type="number" placeholder="—"/>;
+    // Renovação: o código é herdado do lead original e NÃO pode ser editado aqui
+    // (o banco também trava: gatilho copia o código do original em qualquer insert/update).
+    case "numero_cliente":
+      if(item?.renovacao_de) return (
+        <div title="Renovação: o código é o mesmo do lead original e só pode ser alterado nele"
+          style={{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",fontSize:13,fontWeight:600,color:"var(--text2)"}}>
+          <span>{item?.numero_cliente??"—"}</span>
+          <span style={{fontSize:10,fontWeight:700,color:"#7c3aed",background:"#7c3aed18",borderRadius:10,padding:"1px 7px",letterSpacing:.3}}>RENOVAÇÃO</span>
+        </div>
+      );
+      return <EditableCell value={item?.numero_cliente??""} onChange={onChange} type="number" placeholder="—"/>;
     case "status":     return <StatusCell value={v} options={opts} onChange={onChange}/>;
     case "user":       return <UserCell value={respByCol?.[col.id]||[]} allUsers={allUsers} onChange={ids=>onRespChange(col.id,ids)}/>;
     case "currency":   return <CurrencyCell value={v} onChange={onChange}/>;
@@ -2034,7 +2044,7 @@ function ItemMenuOpt({icon,label,onClick,danger=false}) {
 
 function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,
   onDragStart,onDragOver,onDrop,onUpdateValue,onRespChange,sentToNegIds=new Set(),stickyFirstCols=0,colWidths=null,
-  siblingStages=null,onMoveStage=null,sentLabel="Negociações",onSendTimer=null,onReativar=null}) {
+  siblingStages=null,onMoveStage=null,sentLabel="Negociações",onSendTimer=null,onReativar=null,onRenovar=null}) {
   const [hov,setHov]=useState(false);
   const [menu,setMenu]=useState(false);
   const [menuPos,setMenuPos]=useState({top:0,right:0});
@@ -2105,7 +2115,9 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
                 ? <ItemMenuOpt icon="🔁" label="Reenviar para Negociações" onClick={()=>{setMenu(false);onSendToNeg();}}/>
                 : <ItemMenuOpt icon="🤝" label="Enviar para Negociações" onClick={()=>{setMenu(false);onSendToNeg();}}/>
             )}
-            {onSendTimer&&(
+            {onRenovar&&<ItemMenuOpt icon="🔄" label="Renovar lead" onClick={()=>{setMenu(false);onRenovar();}}/>}
+            {/* Renovação não vai ao CRM/Timer: a empresa já existe lá com este número e CNPJ */}
+            {onSendTimer&&!item.renovacao_de&&(
               enviadoTimer
                 ? <ItemMenuOpt icon="✅" label="Já enviado ao CRM/Timer" onClick={()=>{setMenu(false);onSendTimer(item);}}/>
                 : <ItemMenuOpt icon="🚀" label="Enviar para o CRM/Timer" onClick={()=>{setMenu(false);onSendTimer(item);}}/>
@@ -2241,7 +2253,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
   onToggleItem,onSelectAll,onAddItem,onDelGroup,onRenameGroup,onToggle,
   onOpenItem,onUpdateValue,onRespChange,onDelItem,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,onSendTimer,
   onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,sentToNegIds=new Set(),sentLabel="Negociações",
-  sortCfg={colId:null,dir:1},setSortCfg=()=>{},stickyFirstCols=0,siblingStages=null,onMoveStage=null,onReativar=null,
+  sortCfg={colId:null,dir:1},setSortCfg=()=>{},stickyFirstCols=0,siblingStages=null,onMoveStage=null,onReativar=null,onRenovar=null,
   onGroupDragStart=null,onGroupDragEnd=null,canReorderGroups=false}) {
   const [renaming,setRenaming]=useState(false);
   const [gname,setGname]=useState(group.nome);
@@ -2469,6 +2481,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                         onDelete={()=>onDelItem(item.id)}
                         onMoveInativa={onMoveInativa?()=>onMoveInativa(item):null}
                         onReativar={onReativar?()=>onReativar(item):null}
+                        onRenovar={onRenovar?()=>onRenovar(item):null}
                         onDupNeg={onDupNeg?()=>onDupNeg(item):null}
                         onSendToNeg={onSendToNeg?()=>onSendToNeg(item):null}
                         onSendToVendas={onSendToVendas?()=>onSendToVendas(item):null}
@@ -3028,7 +3041,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
       db.from("boards").select("*").eq("id",bid).single(),
       db.from("columns").select("*").eq("board_id",bid).order("ordem"),
       db.from("groups").select("*").eq("board_id",bid).order("ordem"),
-      db.from("items").select("id,group_id,ordem,created_at,numero_cliente,timer_company_id").eq("board_id",bid).order("ordem"),
+      db.from("items").select("id,group_id,ordem,created_at,numero_cliente,timer_company_id,renovacao_de").eq("board_id",bid).order("ordem"),
     ]);
     const ids=(itens||[]).map(i=>i.id);
     let vMap={},rMap={},rColMap={};
@@ -3146,13 +3159,61 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     bump(boardId,1);
   };
 
+  // ── Renovação de lead (só no quadro Vendas): cria uma cópia do lead com o MESMO
+  // código, e com Razão Social, Nome, Empresa, CNPJ, Closer e SDR já preenchidos.
+  // O restante (Plano, Valor, Parcelas, Data Entrada etc.) é preenchido à mão.
+  // `renovacao_de` aponta sempre para o lead RAIZ (renovar uma renovação aponta
+  // para o original), para que o código se propague de um único lugar.
+  const RENOVACAO_CAMPOS=["Razão Social","Nome","Empresa","CNPJ"];
+  const RENOVACAO_RESP=["Closer","SDR"];
+  const renovarLead=async(gid,item)=>{
+    if(!isVendas) return;
+    if(item.numero_cliente==null){toast("Este lead ainda não tem código; preencha o código antes de renovar.","error");return;}
+    const raizId=item.renovacao_de||item.id;
+    const {data,error}=await db.from("items").insert({
+      board_id:boardId,group_id:gid,ordem:9999,
+      renovacao_de:raizId,numero_cliente:item.numero_cliente,
+    }).select().single();
+    if(error){toast("Não foi possível criar a renovação: "+(error.message||"erro"),"error");return;}
+    const cols=board?.columns||[];
+    // Valores de texto/CNPJ
+    const vals={};
+    const inserts=[];
+    cols.filter(c=>RENOVACAO_CAMPOS.includes(c.nome)).forEach(c=>{
+      const v=item.values?.[c.id];
+      if(v!=null&&String(v).trim()!==""){vals[c.id]=v;inserts.push({item_id:data.id,column_id:c.id,value:v});}
+    });
+    if(inserts.length){
+      const {error:e1}=await db.from("item_values").insert(inserts);
+      if(e1) toast("A renovação foi criada, mas alguns campos não foram copiados.","warning");
+    }
+    // Responsáveis (Closer e SDR), por coluna
+    const respByCol={};
+    const respIns=[];
+    cols.filter(c=>c.tipo==="user"&&RENOVACAO_RESP.includes(c.nome)).forEach(c=>{
+      const ids=item.respByCol?.[c.id]||[];
+      if(ids.length){respByCol[c.id]=ids;ids.forEach(uid=>respIns.push({item_id:data.id,user_id:uid,column_id:c.id}));}
+    });
+    if(respIns.length){
+      const {error:e2}=await db.from("item_responsables").insert(respIns);
+      if(e2) toast("A renovação foi criada, mas Closer/SDR não foram copiados.","warning");
+    }
+    const responsibles=[...new Set(Object.values(respByCol).flat())];
+    upd(b=>{b.groups.find(g=>g.id===gid)?.items.push({...data,values:vals,responsibles,respByCol,updates:[]});});
+    bump(boardId,1);
+    setSelected(new Set());
+    await logAct(currentUser?.id,wsId,"item",data.id,"created",{renovacao_de:raizId,numero_cliente:item.numero_cliente});
+    toast(`Renovação criada para o cliente ${item.numero_cliente}. Preencha Plano, Valor, Parcelas e Data Entrada.`,"success");
+  };
+
   const updateValue=async(iid,gid,cid,val)=>{
     const col=(board?.columns||[]).find(c=>c.id===cid);
     // Coluna nativa: fonte única em items.numero_cliente. Nunca grava em item_values.
     if(col?.tipo==="numero_cliente"){
       const limpo=String(val??"").replace(/[^0-9]/g,"");
       const num=limpo===""?null:parseInt(limpo,10);
-      upd(b=>{const it=b.groups.find(g=>g.id===gid)?.items.find(i=>i.id===iid);if(it)it.numero_cliente=num;});
+      // O código do original se propaga às renovações (o banco faz o mesmo por gatilho)
+      upd(b=>{b.groups.forEach(g=>g.items.forEach(it=>{ if(it.id===iid||it.renovacao_de===iid) it.numero_cliente=num; }));});
       if(selItem?.id===iid)setSelItem(p=>({...p,numero_cliente:num}));
       const {error}=await db.from("items").update({numero_cliente:num}).eq("id",iid);
       if(error){
@@ -3188,11 +3249,19 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
   };
 
   const delItem=async(gid,iid)=>{
+    // Lead original com renovações não pode ser excluído (o banco bloqueia: as
+    // renovações herdam o código dele). Avisa antes de mexer na tela.
+    const temRenovacao=(board?.groups||[]).some(g=>(g.items||[]).some(i=>i.renovacao_de===iid));
+    if(temRenovacao){toast("Este lead tem renovações ligadas a ele. Exclua as renovações antes.","error");return;}
+    const {error}=await db.from("items").delete().eq("id",iid);
+    if(error){
+      toast(error.code==="23503"?"Este lead tem renovações ligadas a ele. Exclua as renovações antes.":"Não foi possível excluir o item.","error");
+      return;
+    }
     upd(b=>{const g=b.groups.find(g=>g.id===gid);if(g)g.items=g.items.filter(i=>i.id!==iid);});
     if(selItem?.id===iid)setSelItem(null);
     setSelected(s=>{const n=new Set(s);n.delete(iid);return n;});
     bump(boardId,-1);
-    await db.from("items").delete().eq("id",iid);
     toast("Item excluído");
   };
 
@@ -3960,6 +4029,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
   };
   const isVendas         = board?.nome==="Vendas";            // filtro de período
   const isInativa        = board?.nome==="Base Inativa";      // SDR vê todos os grupos aqui
+  const canRenovar       = isVendas&&!!(perms.all||perms.editAny); // botão "Renovar lead" (só Vendas)
   const canActions       = isPreVendas;                       // mover inativa habilitado no Pré-Vendas
 
   // ── Hierarquia de grupos
@@ -4169,6 +4239,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
                 onDelItem={iid=>setConfirmM({title:"Excluir item",danger:true,message:"Excluir permanentemente?",onConfirm:()=>{delItem(group.id,iid);setConfirmM(null);}})}
                 onMoveInativa={canActions?item=>moveInativa(group.id,item):null}
                 onReativar={isInativa?item=>reativarLead(group.id,item):null}
+                onRenovar={canRenovar?item=>setConfirmM({title:"Renovar lead",message:`Criar uma renovação para o cliente ${item.numero_cliente??"sem código"}? A cópia terá o mesmo código e virá com Razão Social, Nome, Empresa, CNPJ, Closer e SDR preenchidos.`,onConfirm:()=>{setConfirmM(null);renovarLead(group.id,item);}}):null}
                 onDupNeg={null}
                 onSendToNeg={isPreVendas?item=>sendToNeg(group.id,item):null}
                 onSendToVendas={isNegociacoes&&perms.sendToVendas?item=>sendToVendas(group.id,item):null}
@@ -4239,6 +4310,18 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
             style={{...T.btn,background:"#16a34a",color:"#fff",padding:"8px 14px",fontSize:12}}>
             ↩️ Reativar → Pré-Vendas
           </button>}
+          {/* Renovação: um lead por vez, só em Vendas */}
+          {canRenovar&&(()=>{
+            const alvo=selected.size===1?(()=>{const id=[...selected][0];for(const g of board.groups){const it=(g.items||[]).find(i=>i.id===id);if(it)return {gid:g.id,item:it};}return null;})():null;
+            return <button onClick={()=>{
+                if(!alvo){toast("Selecione apenas um lead para renovar","warning");return;}
+                setConfirmM({title:"Renovar lead",message:`Criar uma renovação para o cliente ${alvo.item.numero_cliente??"sem código"}? A cópia terá o mesmo código e virá com Razão Social, Nome, Empresa, CNPJ, Closer e SDR preenchidos.`,onConfirm:()=>{setConfirmM(null);renovarLead(alvo.gid,alvo.item);}});
+              }}
+              title={selected.size===1?"Criar renovação deste lead":"Selecione apenas um lead"}
+              style={{...T.btn,background:selected.size===1?"#7c3aed":"var(--surface3)",color:selected.size===1?"#fff":"var(--text3)",padding:"8px 14px",fontSize:12}}>
+              🔄 Renovar lead
+            </button>;
+          })()}
           {stageOptions.length>0&&(
             <div style={{position:"relative"}}>
               <button onClick={()=>setStageMenuOpen(p=>!p)}
