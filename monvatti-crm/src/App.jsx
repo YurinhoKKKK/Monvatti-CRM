@@ -3507,10 +3507,98 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     await logAct(currentUser?.id,wsId,"item",item.id,"moved",{to:destBoard.nome,group:destGroup.nome});
     return true;
   };
-  // Núcleo do "mover para Base Inativa" — sem toast, reutilizado pelo item único e pelo lote
+  // ── Duplicados na Base Inativa: a chave é o TELEFONE (coluna "Número").
+  // A Base Inativa não tem CNPJ preenchido e o nome da empresa é texto livre,
+  // então o telefone é a única chave confiável. Normaliza para dígitos, ignora
+  // o +55 e compara os 8 últimos dígitos; se os dois lados têm DDD, o DDD também
+  // precisa bater (o 9º dígito do celular pode faltar em registros antigos).
+  const chaveFone=raw=>{
+    let d=String(raw??"").replace(/\D/g,"");
+    if(d.startsWith("55")&&d.length>=12) d=d.slice(2);
+    if(d.length<8) return null;
+    // 11 dígitos = DDD + 9 + 8; 10 dígitos = DDD + 8 (sem o nono dígito)
+    const ddd=d.length>=11?d.slice(-11,-9):d.length===10?d.slice(-10,-8):null;
+    return {d8:d.slice(-8),ddd};
+  };
+  const mesmoFone=(a,b)=>!!a&&!!b&&a.d8===b.d8&&(!a.ddd||!b.ddd||a.ddd===b.ddd);
+  const colFoneDe=cols=>(cols||[]).find(c=>c.tipo==="phone")||(cols||[]).find(c=>c.nome.toLowerCase().trim()==="número");
+  // Procura na Base Inativa um lead com o mesmo telefone do item que está chegando.
+  const buscaDuplicadoInativa=async(item,iBoard,tgtCols)=>{
+    const cSrc=colFoneDe(board?.columns), cDst=colFoneDe(tgtCols);
+    if(!cSrc||!cDst) return null;
+    const chave=chaveFone(item.values?.[cSrc.id]);
+    if(!chave) return null;
+    const PAG=1000, linhas=[];
+    for(let de=0;;de+=PAG){
+      const {data,error}=await db.from("item_values").select("item_id,value").eq("column_id",cDst.id).range(de,de+PAG-1);
+      if(error){console.error("Base Inativa: falha ao conferir duplicado",error);return null;}
+      linhas.push(...(data||[]));
+      if(!data||data.length<PAG) break;
+    }
+    const achado=linhas.find(r=>{
+      const v=(r.value&&typeof r.value==="object"&&"value" in r.value)?r.value.value:r.value;
+      return mesmoFone(chave,chaveFone(v));
+    });
+    if(!achado) return null;
+    const {data:ex}=await db.from("items").select("id,board_id,group_id").eq("id",achado.item_id).eq("board_id",iBoard.id).maybeSingle();
+    return ex||null;
+  };
+  // Funde o item que chega no lead que JÁ existe na Base Inativa: preenche só os
+  // campos vazios do existente, leva responsáveis e atualizações (com a data
+  // original), registra uma atualização automática e exclui a origem.
+  const _fundeNaInativa=async(gid,item,existente,iBoard,tgtCols)=>{
+    const {data:valsSrc}=await db.from("item_values").select("*").eq("item_id",item.id);
+    const {data:valsDst}=await db.from("item_values").select("column_id,value").eq("item_id",existente.id);
+    const vazio=v=>v==null||v===""||(typeof v==="object"&&"value" in v&&(v.value==null||v.value===""));
+    const temNoDestino=new Set((valsDst||[]).filter(v=>!vazio(v.value)).map(v=>v.column_id));
+    const tgtByName=Object.fromEntries(tgtCols.map(c=>[c.nome.toLowerCase().trim(),c.id]));
+    const inserts=[];
+    for(const v of (valsSrc||[])){
+      if(vazio(v.value)) continue;
+      const srcCol=(board?.columns||[]).find(c=>c.id===v.column_id);
+      const tgtId=srcCol?tgtByName[srcCol.nome.toLowerCase().trim()]:null;
+      if(tgtId&&!temNoDestino.has(tgtId)) inserts.push({item_id:existente.id,column_id:tgtId,value:v.value});
+    }
+    if(inserts.length) await db.from("item_values").upsert(inserts,{onConflict:"item_id,column_id"});
+    // Responsáveis: só os que ainda não estão na linha existente (evita violar a chave única)
+    const {data:respsSrc}=await db.from("item_responsables").select("*").eq("item_id",item.id);
+    const {data:respsDst}=await db.from("item_responsables").select("user_id,column_id").eq("item_id",existente.id);
+    const tgtUserByName=Object.fromEntries(tgtCols.filter(c=>c.tipo==="user").map(c=>[c.nome.toLowerCase().trim(),c.id]));
+    const jaTem=new Set((respsDst||[]).map(r=>r.user_id+"|"+r.column_id));
+    const rIns=[];
+    for(const r of (respsSrc||[])){
+      if(!r.column_id) continue;
+      const srcCol=(board?.columns||[]).find(c=>c.id===r.column_id);
+      const tgtId=srcCol?tgtUserByName[srcCol.nome.toLowerCase().trim()]:null;
+      if(tgtId&&!jaTem.has(r.user_id+"|"+tgtId)){jaTem.add(r.user_id+"|"+tgtId);rIns.push({item_id:existente.id,user_id:r.user_id,column_id:tgtId});}
+    }
+    if(rIns.length) await db.from("item_responsables").insert(rIns);
+    // Atualizações, preservando a data original
+    const {data:upds}=await db.from("item_updates").select("*").eq("item_id",item.id).order("created_at");
+    if(upds?.length) await db.from("item_updates").insert(upds.map(u=>({item_id:existente.id,content:u.content,created_by:u.created_by,created_at:u.created_at})));
+    const hoje=new Date().toLocaleDateString("pt-BR");
+    await db.from("item_updates").insert({item_id:existente.id,created_by:currentUser?.id||null,
+      content:`🔁 Lead chegou de novo à Base Inativa em ${hoje}, vindo de ${board?.nome||"outro quadro"} (${currentUser?.nome||"usuário"}). Já existia aqui pelo mesmo telefone; histórico unido nesta linha.`});
+    // Remove a origem
+    upd(b=>{const g=b.groups.find(g=>g.id===gid);if(g)g.items=g.items.filter(i=>i.id!==item.id);});
+    if(selItem?.id===item.id)setSelItem(null);
+    bump(boardId,-1);
+    await db.from("items").delete().eq("id",item.id);
+    await logAct(currentUser?.id,wsId,"item",item.id,"moved",{to:iBoard.nome,merged_into:existente.id});
+    return true;
+  };
+
+  // Núcleo do "mover para Base Inativa" — sem toast, reutilizado pelo item único e pelo lote.
+  // Antes de criar linha nova, confere duplicado por telefone; se já existe, FUNDE.
   const _moveToInativaCore=async(gid,item)=>{
     const iBoard=boards.find(b=>b.nome==="Base Inativa");
     if(!iBoard){toast("Board 'Base Inativa' não encontrado","error");return false;}
+    const {data:tgtCols}=await db.from("columns").select("*").eq("board_id",iBoard.id);
+    const existente=await buscaDuplicadoInativa(item,iBoard,tgtCols||[]);
+    if(existente){
+      const ok=await _fundeNaInativa(gid,item,existente,iBoard,tgtCols||[]);
+      return ok?"merged":false; // quem chama decide a mensagem
+    }
     const {data:tgs}=await db.from("groups").select("*").eq("board_id",iBoard.id).order("ordem");
     const isTraf=board?.nome==="Tráfego";
     const tg=isTraf?tgs?.find(g=>g.nome==="Tráfego"):tgs?.find(g=>g.nome==="Prospecção Fria")||tgs?.[0];
@@ -3552,8 +3640,9 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     abrirReativar(alvos);
   };
   const moveInativa=async(gid,item)=>{
-    const ok=await _moveToInativaCore(gid,item);
-    if(ok) toast("Movido para Base Inativa (com dados e atualizações)");
+    const r=await _moveToInativaCore(gid,item);
+    if(r==="merged") toast("Este lead já estava na Base Inativa (mesmo telefone). O histórico foi unido na linha existente.","warning");
+    else if(r) toast("Movido para Base Inativa (com dados e atualizações)");
   };
   // Move em lote os leads selecionados para a Base Inativa (usado pela barra do checkbox)
   const bulkMoveInativa=async()=>{
@@ -3562,9 +3651,9 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     board.groups.forEach(g=>(g.items||[]).forEach(it=>{ if(ids.includes(it.id)) targets.push({gid:g.id,item:it}); }));
     if(!targets.length) return;
     setSelected(new Set());
-    let ok=0;
-    for(const t of targets){ if(await _moveToInativaCore(t.gid,t.item)) ok++; }
-    toast(`${ok} lead(s) movido(s) para Base Inativa`+(ok<targets.length?` · ${targets.length-ok} com erro`:""), ok?"success":"error");
+    let ok=0, fundidos=0;
+    for(const t of targets){ const r=await _moveToInativaCore(t.gid,t.item); if(r){ok++; if(r==="merged") fundidos++;} }
+    toast(`${ok} lead(s) movido(s) para Base Inativa`+(fundidos?` · ${fundidos} já existia(m) lá e foi(ram) unido(s) pelo telefone`:"")+(ok<targets.length?` · ${targets.length-ok} com erro`:""), ok?"success":"error");
   };
 
   const dupNeg=async(gid,item)=>{
@@ -5752,31 +5841,23 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
       // que reflete apenas quando a linha foi criada no quadro. Isto evita que um lead
       // com Data Entrada no período, mas criado fora dele, fique de fora da busca.
       // group_id é essencial: em Negociações o ESTADO do lead é o grupo (etapa), não a coluna Etapa.
-      const{data:items}=await db.from("items").select("id,board_id,group_id,created_at")
-        .in("board_id",boardIds).order("created_at",{ascending:true});
-
-      // Todos negociações (sem filtro) para proposta na rua
-      const negB=bds.find(b=>b.nome==="Negociações");
-      let allNeg=[];
-      if(negB){const{data:ni}=await db.from("items").select("id,board_id,group_id,created_at").eq("board_id",negB.id);allNeg=ni||[];}
-
-      // Últimos 8 meses vendas (para gráfico)
-      const venB=bds.find(b=>b.nome==="Vendas");
-      let allVen=[];
-      if(venB){
-        const dt8=new Date();dt8.setMonth(dt8.getMonth()-7);dt8.setDate(1);dt8.setHours(0,0,0,0);
-        const{data:vi}=await db.from("items").select("id,board_id,group_id,created_at").eq("board_id",venB.id).gte("created_at",dt8.toISOString());
-        allVen=vi||[];
+      // PAGINADO: o Supabase corta em 1000 linhas e ignora .limit() maior. Os 3
+      // quadros somavam 553 itens em nov/2026; sem paginação, ao passar de 1000 o
+      // dashboard perderia itens em silêncio (e as consultas antigas por quadro,
+      // que eram subconjuntos desta, tinham o mesmo teto).
+      const PAG_ITENS=1000;
+      const items=[];
+      for(let de=0;;de+=PAG_ITENS){
+        const{data,error}=await db.from("items").select("id,board_id,group_id,created_at")
+          .in("board_id",boardIds).order("created_at",{ascending:true}).range(de,de+PAG_ITENS-1);
+        if(error){console.error("Dashboard: falha ao carregar items",error);break;}
+        items.push(...(data||[]));
+        if(!data||data.length<PAG_ITENS) break;
       }
-
-      // Todos pré-vendas (para MQL total)
-      const preB=bds.find(b=>b.nome==="Pré - Vendas");
-      let allPre=[];
-      if(preB){const{data:pi}=await db.from("items").select("id,board_id,group_id,created_at").eq("board_id",preB.id);allPre=pi||[];}
 
       // ── DEDUPLICAR por id antes de salvar ────────────────────────────────
       const uniqMap=new Map();
-      for(const it of [...(items||[]),...allNeg,...allVen,...allPre]) uniqMap.set(it.id,it);
+      for(const it of items) uniqMap.set(it.id,it);
       const uniqItems=[...uniqMap.values()];
       const uniqIds=uniqItems.map(x=>x.id);
       setRawItems(uniqItems);
@@ -5984,7 +6065,11 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
   },[]);
 
   const canEditGoal=perms?.all||perms?.manageBoards||perms?.editAny||perms?.isFull;
-  const progresso=goal>0?(metrics.receitaEfetiva||0)/goal*100:0;
+  // A meta é MENSAL. Em "Período" e "Todos" a receita não é comparável com ela
+  // (em "Todos" aparecia 554% de atingimento), então o bloco de meta só calcula no modo Mês.
+  const metaAplicavel=filterMode==="month";
+  const goalAtivo=metaAplicavel?goal:0;
+  const progresso=goalAtivo>0?(metrics.receitaEfetiva||0)/goalAtivo*100:0;
   const gridCols=width>=1400?"repeat(4,1fr)":width>=1024?"repeat(3,1fr)":width>=640?"repeat(2,1fr)":"1fr";
   const chartCols=width>=1200?"repeat(3,1fr)":width>=768?"repeat(2,1fr)":"1fr";
 
@@ -6027,10 +6112,10 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
           <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:16}}>
             <div>
               <div style={{fontWeight:900,fontSize:isMobile?15:18,color:"var(--text)"}}>🎯 Meta Mensal</div>
-              <div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>{filterMode==="month"?monthOptions.find(m=>m.val===selMonth)?.label||selMonth:"Período selecionado"}</div>
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>{filterMode==="month"?monthOptions.find(m=>m.val===selMonth)?.label||selMonth:"Período selecionado · a meta é mensal e só é comparada no modo Mês"}</div>
             </div>
             <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
-              {canEditGoal&&!editGoal&&<button onClick={()=>{setEditGoal(true);setGoalInput(String(goal));}} style={{...T.btn,background:"var(--surface3)",color:"var(--text2)",padding:"7px 14px",fontSize:12,border:"1px solid var(--border)"}}>{goal>0?"✏️ Editar meta":"+ Definir meta"}</button>}
+              {canEditGoal&&metaAplicavel&&!editGoal&&<button onClick={()=>{setEditGoal(true);setGoalInput(String(goal));}} style={{...T.btn,background:"var(--surface3)",color:"var(--text2)",padding:"7px 14px",fontSize:12,border:"1px solid var(--border)"}}>{goal>0?"✏️ Editar meta":"+ Definir meta"}</button>}
               {editGoal&&<div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
                 <div style={{position:"relative"}}>
                   <span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",color:"var(--text3)",fontSize:13}}>R$</span>
@@ -6041,12 +6126,12 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
               </div>}
             </div>
           </div>
-          <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr 1fr":"repeat(4,1fr)",gap:12,marginBottom:goal>0?16:0}}>
+          <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr 1fr":"repeat(4,1fr)",gap:12,marginBottom:goalAtivo>0?16:0}}>
             {[
               {lbl:"Receita Efetiva",val:fmtBRL(metrics.receitaEfetiva||0),clr:"#059669"},
-              {lbl:"Meta",val:goal>0?fmtBRL(goal):"—",clr:"var(--text)"},
-              {lbl:"Restante",val:goal>0?fmtBRL(Math.max(goal-(metrics.receitaEfetiva||0),0)):"—",clr:goal>0&&(metrics.receitaEfetiva||0)>=goal?"#059669":"#dc2626"},
-              {lbl:"Atingimento",val:goal>0?`${Math.round(progresso)}%`:"—",clr:progresso>=100?"#059669":progresso>=70?"#d97706":"#dc2626"},
+              {lbl:"Meta",val:goalAtivo>0?fmtBRL(goalAtivo):"—",clr:"var(--text)"},
+              {lbl:"Restante",val:goalAtivo>0?fmtBRL(Math.max(goalAtivo-(metrics.receitaEfetiva||0),0)):"—",clr:goalAtivo>0&&(metrics.receitaEfetiva||0)>=goalAtivo?"#059669":"#dc2626"},
+              {lbl:"Atingimento",val:goalAtivo>0?`${Math.round(progresso)}%`:"—",clr:progresso>=100?"#059669":progresso>=70?"#d97706":"#dc2626"},
             ].map((item,i)=>(
               <div key={i}>
                 <div style={{fontSize:10,fontWeight:700,color:"var(--text3)",textTransform:"uppercase",letterSpacing:.5,marginBottom:4}}>{item.lbl}</div>
@@ -6055,15 +6140,15 @@ function DashboardPage({onBack,wsId,allUsers,perms,profile}){
             ))}
           </div>
           {(metrics.venSemDataLen||0)>0&&(
-            <div style={{fontSize:11,color:"#d97706",marginBottom:goal>0?10:0}}>
+            <div style={{fontSize:11,color:"#d97706",marginBottom:goalAtivo>0?10:0}}>
               ⚠ {metrics.venSemDataLen} venda(s) deste período sem "Data Entrada": contadas pela data de criação. Preencha a coluna no quadro Vendas para o número refletir a data real.
             </div>
           )}
-          {goal>0&&<div>
+          {goalAtivo>0&&<div>
             <div style={{height:10,background:"var(--surface3)",borderRadius:5,overflow:"hidden",marginBottom:6}}>
               <div style={{height:"100%",width:`${Math.min(progresso,100)}%`,background:progresso>=100?"#059669":progresso>=70?"#d97706":"var(--blue)",borderRadius:5,transition:"width .6s ease"}}/>
             </div>
-            <div style={{fontSize:11,color:"var(--text3)"}}>{progresso>=100?"🎉 Meta atingida!":progresso>=70?`Quase lá — faltam ${fmtBRL(goal-(metrics.receitaEfetiva||0))}`:`${Math.round(100-progresso)}% abaixo da meta`}</div>
+            <div style={{fontSize:11,color:"var(--text3)"}}>{progresso>=100?"🎉 Meta atingida!":progresso>=70?`Quase lá, faltam ${fmtBRL(goalAtivo-(metrics.receitaEfetiva||0))}`:`${Math.round(100-progresso)}% abaixo da meta`}</div>
           </div>}
         </div>
 
