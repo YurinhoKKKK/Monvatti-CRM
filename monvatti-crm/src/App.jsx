@@ -4634,6 +4634,14 @@ function AdminPanel({onBack}) {
     setUsers(p=>p.map(u=>u.id===userId?{...u,role_id:roleId||null,roles:newRole}:u));
     toast("Cargo atribuído com sucesso!");
   };
+  // Ramal do PABX (VTcall): liga as ligações sincronizadas ao usuário. Único por usuário.
+  const salvarRamal=async(userId,ramal)=>{
+    const r=String(ramal||"").replace(/\D/g,"")||null;
+    const {error}=await db.from("profiles").update({ramal:r}).eq("id",userId);
+    if(error){toast(error.code==="23505"?"Esse ramal já está em outro usuário.":error.message,"error");return;}
+    setUsers(p=>p.map(u=>u.id===userId?{...u,ramal:r}:u));
+    toast(r?`Ramal ${r} salvo`:"Ramal removido");
+  };
 
   const saveRole=async(roleData)=>{
     const slug=roleData.slug||(roleData.nome||"").toLowerCase().replace(/[^a-z0-9]+/g,"_");
@@ -4701,6 +4709,13 @@ function AdminPanel({onBack}) {
                   <option value="">— Sem cargo —</option>
                   {roles.map(r=><option key={r.id} value={r.id}>{r.nome}</option>)}
                 </select>}
+                {/* Ramal do PABX (VTcall) */}
+                {perms.manageUsers
+                  ?<input defaultValue={u.ramal||""} placeholder="Ramal" title="Ramal no PABX VTcall (ex.: 4602)" maxLength={6}
+                      onBlur={e=>{if((e.target.value.replace(/\D/g,"")||null)!==(u.ramal||null))salvarRamal(u.id,e.target.value);}}
+                      onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}}
+                      style={{...T.inp,width:80,padding:"7px 10px",fontSize:12}}/>
+                  :u.ramal&&<span style={{fontSize:11,color:"var(--text3)"}}>📞 {u.ramal}</span>}
               </div>
             ))}
           </div>
@@ -5134,7 +5149,7 @@ function BoardFormModal({initial={},onSave,onCancel}) {
 // ─────────────────────────────────────────────────────────────────────────────
 // SIDEBAR — responsiva com drawer no mobile
 // ─────────────────────────────────────────────────────────────────────────────
-function Sidebar({boards,currentBoardId,currentUser,wsNome,dark,onToggleDark,perms,onSelectBoard,onAddBoard,onEditBoard,onDelBoard,onReorderBoards,onBoardSettings,onDuplicateBoard,onProfile,onAdmin,onDashboard,onLogout,open,onClose}) {
+function Sidebar({boards,currentBoardId,currentUser,wsNome,dark,onToggleDark,perms,onSelectBoard,onAddBoard,onEditBoard,onDelBoard,onReorderBoards,onBoardSettings,onDuplicateBoard,onProfile,onAdmin,onDashboard,onAtividade=null,onLogout,open,onClose}) {
   const {isMobile}=useBreakpoint();
   const [boardMenu,setBoardMenu]=useState(null);
   const [boardMenuPos,setBoardMenuPos]=useState({top:0,left:248});
@@ -5180,6 +5195,14 @@ function Sidebar({boards,currentBoardId,currentUser,wsNome,dark,onToggleDark,per
             <span style={{fontSize:17,flexShrink:0}}>📊</span>
             <span style={{flex:1}}>Dashboard</span>
           </div>
+          {onAtividade&&<div onClick={()=>{onAtividade();if(isMobile)onClose();}}
+            style={{display:"flex",alignItems:"center",gap:9,padding:"9px 11px",borderRadius:9,cursor:"pointer",
+              color:"rgba(255,255,255,.65)",fontSize:13,marginBottom:10,background:"transparent"}}
+            onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.1)"}
+            onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+            <span style={{fontSize:17,flexShrink:0}}>📞</span>
+            <span style={{flex:1}}>Atividade SDR</span>
+          </div>}
           <div style={{height:1,background:"rgba(255,255,255,.1)",marginBottom:10}}/>
         </>}
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8,padding:"0 4px"}}>
@@ -5774,6 +5797,557 @@ function ChartCard({title,subtitle,children,action}){
 // Registros do quadro Vendas que NÃO são venda (decisão do Mauricio): entram no
 // quadro para controle, mas ficam FORA de receita, contagem, ticket, funil e conversão.
 const PLANOS_NAO_VENDA=["Potencializa Amazon"];
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ATIVIDADE SDR: ligações sincronizadas do PABX VTcall (tabela vt_ligacoes).
+// Fonte: Edge Function vtcall-sync (puxa /API/ligacoes do PABX). O banco deriva
+// ramal → usuário, direção, telefone e o lead casado pelo telefone.
+// Regras de contagem:
+//   - "Ligações"  = todas as chamadas em que o ramal do SDR participou, de saída
+//                   ou de entrada (internas entre ramais ficam fora).
+//   - "Atendidas" = status ATENDIDA.
+//   - "Conversas" = atendidas com 60 segundos ou mais (proxy de conversa real).
+//   - "Leads"     = telefones distintos contatados no período.
+//   - Meta diária por SDR: editável na tela (fica salva neste navegador).
+//   - Todo contador, barra e número da tabela por pessoa é clicável: abre na
+//     lista só as ligações que compõem aquele número (recorte).
+//   - Sem campos de IA: o recurso não está contratado na VTcall.
+// ═══════════════════════════════════════════════════════════════════════════
+const VT_META_DIARIA_PADRAO=50;
+const VT_CORES=["#3b82f6","#f59e0b","#10b981","#a855f7","#ef4444","#06b6d4","#ec4899","#84cc16"];
+const segParaTexto=s=>{s=Math.max(0,Math.round(s||0));const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),x=s%60;return h?`${h}h ${String(m).padStart(2,"0")}m`:m?`${m}m ${String(x).padStart(2,"0")}s`:`${x}s`;};
+const ymdLocal=d=>{const p=n=>String(n).padStart(2,"0");return`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;};
+const fmtFoneBR=d=>{if(!d)return"";const s=String(d);if(s.length===11)return`(${s.slice(0,2)}) ${s.slice(2,7)}-${s.slice(7)}`;if(s.length===10)return`(${s.slice(0,2)}) ${s.slice(2,6)}-${s.slice(6)}`;return s;};
+
+function AtividadeSdrPage({onBack,allUsers,perms}){
+  const{isMobile,width}=useBreakpoint();
+  const toast=useToast();
+  const hoje=ymdLocal(new Date());
+  const [preset,setPreset]=useState("7d");          // hoje | 7d | mes | custom
+  const [ini,setIni]=useState(()=>{const d=new Date();d.setDate(d.getDate()-6);return ymdLocal(d);});
+  const [fim,setFim]=useState(hoje);
+  const [ligacoes,setLigacoes]=useState([]);
+  const [leadsNome,setLeadsNome]=useState({});       // item_id → "Empresa · Nome"
+  const [estado,setEstado]=useState(null);           // vt_sync_estado
+  const [loading,setLoading]=useState(true);
+  const [syncing,setSyncing]=useState(false);
+  const [sdrSel,setSdrSel]=useState("todos");
+  const [soComLead,setSoComLead]=useState(false);
+  const [metaDiaria,setMetaDiaria]=useState(()=>{try{return Number(localStorage.getItem("vt_meta_diaria"))||VT_META_DIARIA_PADRAO;}catch{return VT_META_DIARIA_PADRAO;}});
+  const [editMeta,setEditMeta]=useState(false);
+  const [metaInput,setMetaInput]=useState("");
+  const [recorte,setRecorte]=useState(null);              // {rot,fn}: ligações que compõem um número clicado
+  const [sortP,setSortP]=useState({k:"total",dir:-1});     // ordenação da tabela por pessoa
+  const [sortL,setSortL]=useState({k:"hora",dir:-1});      // ordenação da lista de ligações
+  const [fStatus,setFStatus]=useState("todos");
+  const [fDur,setFDur]=useState("todos");
+  const [fLead,setFLead]=useState("todos");
+  const [busca,setBusca]=useState("");
+  const [rankMet,setRankMet]=useState("total");
+  const [cmpSel,setCmpSel]=useState(null);                 // null = todos marcados
+
+  // Quem aparece: usuários com ramal cadastrado (SDRs e closers com telefone)
+  const comRamal=useMemo(()=>(allUsers||[]).filter(u=>u.ramal).sort((a,b)=>String(a.ramal).localeCompare(String(b.ramal))),[allUsers]);
+  const sdrs=useMemo(()=>comRamal.filter(u=>u.roles?.slug==="sdr"),[comRamal]);
+  const outros=useMemo(()=>comRamal.filter(u=>u.roles?.slug!=="sdr"),[comRamal]);
+
+  const aplicarPreset=p=>{
+    setPreset(p);
+    const d=new Date();
+    if(p==="hoje"){setIni(hoje);setFim(hoje);}
+    else if(p==="7d"){const a=new Date(d);a.setDate(a.getDate()-6);setIni(ymdLocal(a));setFim(hoje);}
+    else if(p==="mes"){setIni(`${hoje.slice(0,7)}-01`);setFim(hoje);}
+  };
+
+  const carregar=async()=>{
+    setLoading(true);
+    try{
+      // Datas como texto no fuso local; a coluna é timestamptz, então compara em ISO com offset
+      const de=`${ini}T00:00:00-03:00`, ate=`${fim}T23:59:59-03:00`;
+      const PAG=1000, out=[];
+      for(let o=0;;o+=PAG){
+        const {data,error}=await db.from("vt_ligacoes")
+          .select("linkedid,hora,origem,destino,status,duracao_seg,audio,ramal,direcao,telefone,profile_id,item_id,item_board_id")
+          .gte("hora",de).lte("hora",ate).order("hora",{ascending:false}).range(o,o+PAG-1);
+        if(error){toast("Não foi possível carregar as ligações: "+error.message,"error");break;}
+        out.push(...(data||[]));
+        if(!data||data.length<PAG)break;
+      }
+      setLigacoes(out);
+      // Nomes dos leads casados (Empresa / Nome), em lotes
+      const ids=[...new Set(out.map(l=>l.item_id).filter(Boolean))];
+      const nomes={};
+      for(let i=0;i<ids.length;i+=200){
+        const chunk=ids.slice(i,i+200);
+        const {data:vals}=await db.from("item_values").select("item_id,value,columns!inner(nome)").in("item_id",chunk).in("columns.nome",["Empresa","Nome","Razão Social"]);
+        (vals||[]).forEach(v=>{
+          const raw=(v.value&&typeof v.value==="object"&&"value" in v.value)?v.value.value:v.value;
+          const t=typeof raw==="string"?raw.trim():"";
+          if(!t)return;
+          nomes[v.item_id]=nomes[v.item_id]||{};
+          nomes[v.item_id][v.columns?.nome]=t;
+        });
+      }
+      const mapa={};
+      Object.entries(nomes).forEach(([id,n])=>{mapa[id]=[n["Empresa"]&&n["Empresa"]!=="Empresa"?n["Empresa"]:n["Razão Social"],n["Nome"]&&n["Nome"]!=="Nome"?n["Nome"]:null].filter(Boolean).join(" · ")||"(lead sem nome)";});
+      setLeadsNome(mapa);
+      const {data:est}=await db.from("vt_sync_estado").select("*").eq("id",1).maybeSingle();
+      setEstado(est||null);
+    }finally{setLoading(false);}
+  };
+  useEffect(()=>{carregar();},[ini,fim]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sincroniza com o PABX (Edge Function) e recarrega
+  const sincronizar=async(force=false)=>{
+    setSyncing(true);
+    try{
+      const {data,error}=await db.functions.invoke("vtcall-sync",{body:force?{since:`${ini} 00:00:00`,until:`${fim} 23:59:59`}:{}});
+      if(error){
+        const corpo=await corpoDaResposta(error);
+        toast(corpo?.message||"Não foi possível sincronizar com a VTcall.","error");
+      }else if(data&&data.ok===false){
+        toast(data.message||"A VTcall respondeu com erro.","error");
+      }else{
+        toast(data?.message||"Ligações sincronizadas.","success");
+      }
+      await carregar();
+    }finally{setSyncing(false);}
+  };
+  // Ao abrir, sincroniza se a última vez foi há mais de 10 minutos
+  useEffect(()=>{
+    (async()=>{
+      const {data:est}=await db.from("vt_sync_estado").select("ultima_sync").eq("id",1).maybeSingle();
+      const velha=!est?.ultima_sync||(Date.now()-new Date(est.ultima_sync).getTime())>10*60*1000;
+      if(velha) sincronizar(false);
+    })();
+  },[]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Métricas
+  const uteis=useMemo(()=>ligacoes.filter(l=>l.direcao==="saida"||l.direcao==="entrada"),[ligacoes]);
+  const filtradas=useMemo(()=>uteis.filter(l=>(sdrSel==="todos"||l.profile_id===sdrSel)&&(!soComLead||l.item_id)),[uteis,sdrSel,soComLead]);
+  const diasPeriodo=useMemo(()=>{const a=new Date(ini+"T00:00:00"),b=new Date(fim+"T00:00:00");return Math.max(1,Math.round((b-a)/86400000)+1);},[ini,fim]);
+  const contaUteis=(de,ate)=>{let n=0;const d=new Date(de+"T00:00:00");const b=new Date(ate+"T00:00:00");while(d<=b){const wd=d.getDay();if(wd!==0&&wd!==6)n++;d.setDate(d.getDate()+1);}return n;};
+  const diasUteis=useMemo(()=>Math.max(1,contaUteis(ini,fim)),[ini,fim]);
+
+  // Testes reutilizados pelos contadores e pelos recortes (clique)
+  const ehAtendida=l=>l.status==="ATENDIDA";
+  const ehConversa=l=>l.status==="ATENDIDA"&&(l.duracao_seg||0)>=60;
+  const ehCurta=l=>l.status==="ATENDIDA"&&(l.duracao_seg||0)<10;
+
+  const resumoPor=lista=>{
+    const atend=lista.filter(ehAtendida);
+    const tempo=atend.reduce((s,l)=>s+(l.duracao_seg||0),0);
+    const fones=new Set(lista.map(l=>l.telefone).filter(Boolean));
+    const comLead=lista.filter(l=>l.item_id).length;
+    return {total:lista.length,saida:lista.filter(l=>l.direcao==="saida").length,entrada:lista.filter(l=>l.direcao==="entrada").length,
+      atendidas:atend.length,curtas:lista.filter(ehCurta).length,taxa:lista.length?atend.length/lista.length*100:0,conversas:lista.filter(ehConversa).length,tempo,
+      tempoMedio:atend.length?tempo/atend.length:0,leads:fones.size,comLead,semLead:lista.length-comLead};
+  };
+  const geral=useMemo(()=>resumoPor(filtradas),[filtradas]); // eslint-disable-line react-hooks/exhaustive-deps
+  const porSdr=useMemo(()=>comRamal.map((u,i)=>({u,cor:VT_CORES[i%VT_CORES.length],...resumoPor(uteis.filter(l=>l.profile_id===u.id&&(!soComLead||l.item_id)))})),[comRamal,uteis,soComLead]); // eslint-disable-line react-hooks/exhaustive-deps
+  const semRamal=useMemo(()=>uteis.filter(l=>!l.profile_id).length,[uteis]);
+
+  // Meta: em "Todos", compara só as ligações dos SDRs com a meta somada dos SDRs
+  // (closers com ramal aparecem na página, mas não entram na meta do time).
+  const idsSdr=useMemo(()=>new Set(sdrs.map(u=>u.id)),[sdrs]);
+  const nSdrMeta=sdrSel==="todos"?Math.max(1,sdrs.length):1;
+  const totalMeta=useMemo(()=>sdrSel==="todos"&&sdrs.length?filtradas.filter(l=>idsSdr.has(l.profile_id)).length:filtradas.length,[filtradas,sdrSel,sdrs,idsSdr]);
+  const alvoMeta=metaDiaria*diasUteis*nSdrMeta;
+  const pctMeta=alvoMeta?totalMeta/alvoMeta*100:0;
+  const faltaMeta=Math.max(0,alvoMeta-totalMeta);
+  // Meta de HOJE (só quando o período inclui hoje e hoje é dia útil)
+  const hojeNoPeriodo=ini<=hoje&&fim>=hoje&&![0,6].includes(new Date(hoje+"T00:00:00").getDay());
+  const feitasHoje=useMemo(()=>filtradas.filter(l=>ymdLocal(new Date(l.hora))===hoje&&(sdrSel!=="todos"||!sdrs.length||idsSdr.has(l.profile_id))).length,[filtradas,hoje,sdrSel,sdrs,idsSdr]);
+  const alvoHoje=metaDiaria*nSdrMeta;
+  const corMeta=p=>p>=100?"#059669":p>=70?"#d97706":"#dc2626";
+
+  // Por dia (barras): total e atendidas
+  const porDia=useMemo(()=>{
+    const m={};
+    const d=new Date(ini+"T00:00:00");const b=new Date(fim+"T00:00:00");
+    while(d<=b){m[ymdLocal(d)]={total:0,atend:0};d.setDate(d.getDate()+1);}
+    filtradas.forEach(l=>{const k=ymdLocal(new Date(l.hora));if(m[k]){m[k].total++;if(l.status==="ATENDIDA")m[k].atend++;}});
+    return Object.entries(m).map(([dia,v])=>({dia,...v}));
+  },[filtradas,ini,fim]);
+  const maxDia=Math.max(1,...porDia.map(d=>d.total));
+
+  // Por hora do dia (0..23)
+  const porHora=useMemo(()=>{
+    const h=Array.from({length:24},()=>({total:0,atend:0}));
+    filtradas.forEach(l=>{const x=new Date(l.hora).getHours();h[x].total++;if(l.status==="ATENDIDA")h[x].atend++;});
+    return h;
+  },[filtradas]);
+  const maxHora=Math.max(1,...porHora.map(h=>h.total));
+
+  const salvarMeta=()=>{const n=parseInt(metaInput,10);if(!n||n<=0){toast("Informe um número maior que zero","error");return;}setMetaDiaria(n);try{localStorage.setItem("vt_meta_diaria",String(n));}catch{/* sem storage */}setEditMeta(false);};
+
+  const nomeU=id=>allUsers.find(u=>u.id===id)?.nome||"(sem ramal)";
+  const primeiroNome=n=>String(n||"").split(" ")[0];
+  const corStatus=s=>s==="ATENDIDA"?"#059669":s==="NÃO ATENDIDA"?"#d97706":(s==="OCUPADO"||s==="FALHOU")?"#dc2626":"var(--text3)";
+  const gridCols=width>=1400?"repeat(4,1fr)":width>=1024?"repeat(4,1fr)":width>=640?"repeat(2,1fr)":"1fr";
+
+  // ── Recorte (clique em contador, barra ou célula): mostra na lista só as
+  // ligações que compõem aquele número. Um recorte por vez.
+  const listaRef=useRef(null);
+  const abrirRecorte=(rot,fn,porPessoa=false)=>{setRecorte({rot,fn,porPessoa});setTimeout(()=>listaRef.current?.scrollIntoView({behavior:"smooth",block:"start"}),50);};
+  const recortePessoa=(u,rot,fn)=>abrirRecorte(`${primeiroNome(u.nome)}: ${rot}`,l=>l.profile_id===u.id&&(!fn||fn(l)),true);
+  // O recorte por pessoa precisa enxergar a pessoa mesmo com outro filtro ativo
+  const baseLista=useMemo(()=>{
+    if(!recorte) return filtradas;
+    const base=uteis.filter(l=>!soComLead||l.item_id);
+    return base.filter(l=>(sdrSel==="todos"||l.profile_id===sdrSel||recorte.porPessoa)&&recorte.fn(l));
+  },[recorte,filtradas,uteis,sdrSel,soComLead]);
+
+  // ── Lista de ligações: filtros + ordenação
+  const statusDisponiveis=useMemo(()=>[...new Set(uteis.map(l=>l.status).filter(Boolean))].sort(),[uteis]);
+  const listaFinal=useMemo(()=>{
+    const q=busca.trim().toLowerCase(), qd=q.replace(/\D/g,"");
+    let out=baseLista.filter(l=>{
+      if(fStatus!=="todos"&&l.status!==fStatus) return false;
+      if(fDur==="0"&&(l.duracao_seg||0)!==0) return false;
+      if(fDur==="lt10"&&!((l.duracao_seg||0)>0&&(l.duracao_seg||0)<10)) return false;
+      if(fDur==="10a59"&&!((l.duracao_seg||0)>=10&&(l.duracao_seg||0)<60)) return false;
+      if(fDur==="ge60"&&(l.duracao_seg||0)<60) return false;
+      if(fLead==="com"&&!l.item_id) return false;
+      if(fLead==="sem"&&l.item_id) return false;
+      if(q){
+        const nome=(l.item_id?leadsNome[l.item_id]||"":"").toLowerCase();
+        const pessoa=nomeU(l.profile_id).toLowerCase();
+        if(!(nome.includes(q)||pessoa.includes(q)||(qd&&String(l.telefone||"").includes(qd)))) return false;
+      }
+      return true;
+    });
+    const k=sortL.k, dir=sortL.dir;
+    const val=l=>k==="hora"?new Date(l.hora).getTime():k==="pessoa"?nomeU(l.profile_id):k==="telefone"?String(l.telefone||""):k==="lead"?(l.item_id?leadsNome[l.item_id]||"":"~"):k==="status"?String(l.status||""):k==="duracao"?(l.duracao_seg||0):0;
+    out=[...out].sort((a,b)=>{const x=val(a),y=val(b);return (typeof x==="number"?x-y:String(x).localeCompare(String(y),"pt-BR"))*dir;});
+    return out;
+  },[baseLista,fStatus,fDur,fLead,busca,sortL,leadsNome]); // eslint-disable-line react-hooks/exhaustive-deps
+  const temFiltroLista=fStatus!=="todos"||fDur!=="todos"||fLead!=="todos"||busca.trim()!=="";
+  const limparFiltrosLista=()=>{setFStatus("todos");setFDur("todos");setFLead("todos");setBusca("");};
+
+  // ── Tabela por pessoa: ordenação
+  const porSdrOrd=useMemo(()=>{
+    const k=sortP.k, dir=sortP.dir;
+    const val=r=>k==="nome"?r.u.nome:k==="ramal"?Number(r.u.ramal)||0:k==="meta"?r.total:r[k]??0;
+    return [...porSdr].sort((a,b)=>{const x=val(a),y=val(b);return (typeof x==="number"?x-y:String(x).localeCompare(String(y),"pt-BR"))*dir;});
+  },[porSdr,sortP]);
+  const ordena=(estado,setEstadoFn,k,dirPadrao=-1)=>setEstadoFn(estado.k===k?{k,dir:-estado.dir}:{k,dir:dirPadrao});
+  const seta=(estado,k)=>estado.k===k?(estado.dir===1?" ▲":" ▼"):"";
+
+  // ── Ranking e comparação
+  const VT_METRICAS=[
+    {k:"total",rot:"Ligações",fmt:v=>v},
+    {k:"atendidas",rot:"Atendidas",fmt:v=>v},
+    {k:"conversas",rot:"Conversas ≥1min",fmt:v=>v},
+    {k:"tempo",rot:"Tempo em conversa",fmt:segParaTexto},
+    {k:"leads",rot:"Contatos distintos",fmt:v=>v},
+    {k:"taxa",rot:"Taxa de atendimento",fmt:v=>`${v.toFixed(0)}%`},
+    {k:"tempoMedio",rot:"Média por atendida",fmt:segParaTexto},
+  ];
+  const metRank=VT_METRICAS.find(m=>m.k===rankMet)||VT_METRICAS[0];
+  const ranking=useMemo(()=>[...porSdr].sort((a,b)=>(b[rankMet]??0)-(a[rankMet]??0)),[porSdr,rankMet]);
+  const maxRank=Math.max(1,...ranking.map(r=>r[rankMet]??0));
+  const medalha=i=>i===0?"🥇":i===1?"🥈":i===2?"🥉":`${i+1}º`;
+  const cmpLista=useMemo(()=>porSdr.filter(r=>cmpSel===null?true:cmpSel.includes(r.u.id)),[porSdr,cmpSel]);
+  const alternaCmp=id=>{const atual=cmpSel===null?porSdr.map(r=>r.u.id):cmpSel;setCmpSel(atual.includes(id)?atual.filter(x=>x!==id):[...atual,id]);};
+  // Série por dia de cada pessoa comparada
+  const cmpDias=useMemo(()=>porDia.map(d=>({dia:d.dia,por:Object.fromEntries(cmpLista.map(r=>[r.u.id,0]))})).map(row=>{
+    uteis.forEach(l=>{if(row.por[l.profile_id]!=null&&ymdLocal(new Date(l.hora))===row.dia&&(!soComLead||l.item_id))row.por[l.profile_id]++;});
+    return row;
+  }),[porDia,cmpLista,uteis,soComLead]);
+  const maxCmpDia=Math.max(1,...cmpDias.flatMap(r=>Object.values(r.por)));
+
+  // Estilos compartilhados
+  const sCard={background:"var(--surface)",border:"1px solid var(--border)",borderRadius:14,padding:16};
+  const sTh={padding:"6px 8px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap",cursor:"pointer",userSelect:"none"};
+  const sNum={cursor:"pointer",textDecoration:"underline dotted",textUnderlineOffset:3};
+  const sSel={...T.inp,width:"auto",padding:"6px 9px",fontSize:12,borderRadius:8};
+  const cartao=(lbl,val,sub,clr,onClick)=>(
+    <div onClick={onClick} title={onClick?"Clique para ver as ligações que compõem este número":undefined}
+      style={{...sCard,padding:"16px 18px",cursor:onClick?"pointer":"default"}}>
+      <div style={{fontSize:11,fontWeight:700,color:"var(--text3)",textTransform:"uppercase",letterSpacing:.5}}>{lbl}</div>
+      <div style={{fontSize:26,fontWeight:900,color:clr||"var(--text)",marginTop:6}}>{val}</div>
+      {sub&&<div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>{sub}</div>}
+    </div>
+  );
+  const linkSub=(txt,rot,fn)=><a onClick={e=>{e.stopPropagation();abrirRecorte(rot,fn);}} style={{cursor:"pointer",textDecoration:"underline dotted",textUnderlineOffset:3}}>{txt}</a>;
+
+  return(
+    <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",background:"var(--bg)"}}>
+      {/* Cabeçalho */}
+      <div style={{background:"var(--surface)",borderBottom:"1px solid var(--border)",padding:isMobile?"12px 16px":"14px 24px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",flexShrink:0}}>
+        <button onClick={onBack} style={{...T.btn,background:"none",border:"1.5px solid var(--border)",color:"var(--text)",padding:"7px 14px",fontSize:12}}>← Voltar</button>
+        <div style={{fontSize:isMobile?16:18,fontWeight:900,color:"var(--text)"}}>📞 Atividade SDR</div>
+        {(loading||syncing)&&<Spinner size={15}/>}
+        <div style={{display:"flex",borderRadius:8,overflow:"hidden",border:"1.5px solid var(--border)"}}>
+          {[["hoje","Hoje"],["7d","7 dias"],["mes","Mês"],["custom","Período"]].map(([p,l])=>(
+            <button key={p} onClick={()=>aplicarPreset(p)} style={{...T.btn,borderRadius:0,padding:"6px 12px",fontSize:11,background:preset===p?"var(--blue)":"var(--surface)",color:preset===p?"#fff":"var(--text2)"}}>{l}</button>
+          ))}
+        </div>
+        {preset==="custom"&&<div style={{display:"flex",alignItems:"center",gap:6}}>
+          <input type="date" value={ini} max={fim} onChange={e=>setIni(e.target.value)} style={{...T.inp,width:140,padding:"7px 10px",fontSize:12,borderRadius:8}}/>
+          <span style={{color:"var(--text3)",fontSize:12}}>até</span>
+          <input type="date" value={fim} min={ini} max={hoje} onChange={e=>setFim(e.target.value)} style={{...T.inp,width:140,padding:"7px 10px",fontSize:12,borderRadius:8}}/>
+        </div>}
+        <select value={sdrSel} onChange={e=>{setSdrSel(e.target.value);setRecorte(null);}} style={{...T.inp,width:"auto",padding:"7px 10px",fontSize:12,borderRadius:8}}>
+          <option value="todos">Todos com ramal</option>
+          {sdrs.length>0&&<optgroup label="SDRs">{sdrs.map(u=><option key={u.id} value={u.id}>{u.nome} · {u.ramal}</option>)}</optgroup>}
+          {outros.length>0&&<optgroup label="Outros ramais">{outros.map(u=><option key={u.id} value={u.id}>{u.nome} · {u.ramal}</option>)}</optgroup>}
+        </select>
+        <label style={{display:"flex",alignItems:"center",gap:6,fontSize:12,color:"var(--text2)",cursor:"pointer"}}>
+          <input type="checkbox" checked={soComLead} onChange={e=>setSoComLead(e.target.checked)}/> só ligações com lead no CRM
+        </label>
+        <div style={{flex:1}}/>
+        <div style={{fontSize:10,color:"var(--text3)"}}>
+          {estado?.ultima_sync?`PABX sincronizado ${new Date(estado.ultima_sync).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}`:"PABX ainda não sincronizado"}
+          {estado?.ultimo_erro&&<span style={{color:"#dc2626"}}> · último erro: {estado.ultimo_erro}</span>}
+        </div>
+        <button onClick={()=>sincronizar(false)} disabled={syncing} style={{...T.btn,background:"var(--surface3)",color:"var(--text2)",padding:"7px 12px",fontSize:12,border:"1px solid var(--border)"}}>↻ Sincronizar</button>
+        {(perms?.all||perms?.viewAll)&&<button onClick={()=>sincronizar(true)} disabled={syncing} title="Baixa de novo todas as ligações do período escolhido" style={{...T.btn,background:"none",color:"var(--text3)",padding:"7px 10px",fontSize:11,border:"1px solid var(--border)"}}>Rebaixar período</button>}
+      </div>
+
+      <div style={{flex:1,overflowY:"auto",padding:isMobile?"12px":"20px 24px"}}>
+        {comRamal.length===0&&(
+          <div style={{background:"#fef3c7",color:"#92400e",border:"1px solid #fcd34d",borderRadius:12,padding:"12px 16px",marginBottom:16,fontSize:13}}>
+            Nenhum usuário tem ramal cadastrado. Preencha o ramal de cada SDR em Admin › Usuários para as ligações aparecerem por pessoa.
+          </div>
+        )}
+        {semRamal>0&&(
+          <div style={{fontSize:12,color:"var(--text3)",marginBottom:12}}>⚠ {semRamal} ligação(ões) do período em ramais sem usuário no CRM (não entram nas contagens por pessoa).</div>
+        )}
+
+        {/* ── META em destaque ── */}
+        <div style={{background:`linear-gradient(135deg, ${corMeta(pctMeta)}22, var(--surface) 55%)`,border:`2px solid ${corMeta(pctMeta)}`,borderRadius:18,padding:isMobile?"16px":"22px 26px",marginBottom:20}}>
+          <div style={{display:"flex",alignItems:"flex-start",gap:24,flexWrap:"wrap"}}>
+            <div style={{minWidth:190}}>
+              <div style={{fontSize:12,fontWeight:800,color:"var(--text2)",textTransform:"uppercase",letterSpacing:1}}>🎯 Meta de ligações{sdrSel==="todos"?(sdrs.length?" · time de SDRs":""):` · ${primeiroNome(nomeU(sdrSel))}`}</div>
+              <div style={{fontSize:isMobile?52:68,fontWeight:900,lineHeight:1,color:corMeta(pctMeta),marginTop:6}}>{Math.round(pctMeta)}%</div>
+              <div style={{fontSize:13,color:"var(--text2)",marginTop:6,fontWeight:700}}>
+                <a onClick={()=>abrirRecorte(sdrSel==="todos"&&sdrs.length?"Ligações dos SDRs (meta)":"Ligações (meta)",l=>sdrSel!=="todos"||!sdrs.length||idsSdr.has(l.profile_id))} style={sNum}>{totalMeta}</a> de {alvoMeta} ligações
+              </div>
+            </div>
+            <div style={{flex:1,minWidth:260}}>
+              <div style={{height:26,background:"var(--surface3)",borderRadius:13,overflow:"hidden",position:"relative"}}>
+                <div style={{width:`${Math.min(pctMeta,100)}%`,height:"100%",background:corMeta(pctMeta),borderRadius:13,transition:"width .6s ease"}}/>
+              </div>
+              <div style={{display:"flex",gap:18,flexWrap:"wrap",marginTop:10,fontSize:13,color:"var(--text2)"}}>
+                <span>{pctMeta>=100?<b style={{color:"#059669"}}>🎉 Meta do período batida</b>:<span>Faltam <b style={{color:"var(--text)"}}>{faltaMeta}</b> ligações</span>}</span>
+                {hojeNoPeriodo&&<span>Hoje: <b style={{color:corMeta(alvoHoje?feitasHoje/alvoHoje*100:0)}}>{feitasHoje} de {alvoHoje}</b></span>}
+                <span style={{color:"var(--text3)"}}>{metaDiaria}/dia útil{sdrSel==="todos"&&sdrs.length?` × ${sdrs.length} SDR(s)`:""} × {diasUteis} dia(s) útil(eis)</span>
+                {editMeta
+                  ?<span><input value={metaInput} onChange={e=>setMetaInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")salvarMeta();}} style={{...T.inp,width:64,padding:"3px 7px",fontSize:12}} placeholder={String(metaDiaria)}/> <button onClick={salvarMeta} style={{...T.btn,padding:"3px 10px",fontSize:12,background:"var(--blue)",color:"#fff"}}>ok</button></span>
+                  :<a onClick={()=>{setMetaInput(String(metaDiaria));setEditMeta(true);}} style={{cursor:"pointer",color:"var(--blue)"}}>editar meta diária</a>}
+              </div>
+              {/* Meta individual de cada SDR */}
+              {sdrSel==="todos"&&sdrs.length>0&&<div style={{display:"grid",gridTemplateColumns:width>=900?`repeat(${Math.min(sdrs.length,4)},1fr)`:"1fr",gap:12,marginTop:16}}>
+                {porSdr.filter(r=>idsSdr.has(r.u.id)).map(r=>{const alvo=metaDiaria*diasUteis;const p=alvo?r.total/alvo*100:0;return(
+                  <div key={r.u.id} onClick={()=>recortePessoa(r.u,"ligações")} title="Clique para ver as ligações" style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:12,padding:"10px 12px",cursor:"pointer"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8}}>
+                      <span style={{fontWeight:800,fontSize:13}}>{r.u.nome}</span>
+                      <span style={{fontWeight:900,fontSize:18,color:corMeta(p)}}>{Math.round(p)}%</span>
+                    </div>
+                    <div style={{height:10,background:"var(--surface3)",borderRadius:5,overflow:"hidden",margin:"6px 0"}}><div style={{width:`${Math.min(p,100)}%`,height:"100%",background:corMeta(p)}}/></div>
+                    <div style={{fontSize:11,color:"var(--text3)"}}>{r.total} de {alvo} · faltam {Math.max(0,alvo-r.total)}</div>
+                  </div>);})}
+              </div>}
+            </div>
+          </div>
+        </div>
+
+        {/* Cards gerais (clicáveis) */}
+        <div style={{display:"grid",gridTemplateColumns:gridCols,gap:14,marginBottom:20}}>
+          {cartao("Ligações",geral.total,`${geral.saida} de saída · ${geral.entrada} recebidas · ${(geral.total/diasUteis).toFixed(1)} por dia útil`,null,()=>abrirRecorte("Todas as ligações",()=>true))}
+          {cartao("Atendidas",`${geral.atendidas} (${geral.taxa.toFixed(0)}%)`,<span>{linkSub(`${geral.conversas} conversas de 1 min ou mais`,"Conversas de 1 min ou mais",ehConversa)} · {linkSub(`${geral.curtas} atendidas com menos de 10s`,"Atendidas com menos de 10s",ehCurta)}</span>,"#059669",()=>abrirRecorte("Atendidas",ehAtendida))}
+          {cartao("Tempo em conversa",segParaTexto(geral.tempo),`média de ${segParaTexto(geral.tempoMedio)} por atendida`,null,()=>{abrirRecorte("Atendidas, mais longas primeiro",ehAtendida);setSortL({k:"duracao",dir:-1});})}
+          {cartao("Contatos distintos",geral.leads,<span>{linkSub(`${geral.comLead} ligações casadas com lead`,"Com lead no CRM",l=>!!l.item_id)} · {linkSub(`${geral.semLead} sem lead no CRM`,"Sem lead no CRM",l=>!l.item_id)}</span>,null,()=>{abrirRecorte("Todas, agrupadas por telefone",()=>true);setSortL({k:"telefone",dir:1});})}
+        </div>
+
+        {/* Ranking + Comparação */}
+        <div style={{display:"grid",gridTemplateColumns:width>=1100?"1fr 2fr":"1fr",gap:14,marginBottom:20}}>
+          <div style={sCard}>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12,flexWrap:"wrap"}}>
+              <div style={{fontWeight:800,fontSize:14}}>🏆 Ranking</div>
+              <select value={rankMet} onChange={e=>setRankMet(e.target.value)} style={sSel}>{VT_METRICAS.map(m=><option key={m.k} value={m.k}>{m.rot}</option>)}</select>
+            </div>
+            {ranking.map((r,i)=>(
+              <div key={r.u.id} onClick={()=>recortePessoa(r.u,"ligações")} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderTop:i?"1px solid var(--border)":"none",cursor:"pointer"}}>
+                <div style={{width:34,textAlign:"center",fontSize:i<3?22:13,fontWeight:800,color:"var(--text3)"}}>{medalha(i)}</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",justifyContent:"space-between",gap:8}}>
+                    <span style={{fontWeight:i===0?900:700,fontSize:13,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{r.u.nome}{r.u.roles?.slug&&r.u.roles.slug!=="sdr"&&<span style={{fontSize:10,color:"var(--text3)",marginLeft:6,fontWeight:400}}>{r.u.roles.nome}</span>}</span>
+                    <span style={{fontWeight:900,fontSize:14}}>{metRank.fmt(r[rankMet]??0)}</span>
+                  </div>
+                  <div style={{height:6,background:"var(--surface3)",borderRadius:3,overflow:"hidden",marginTop:5}}><div style={{width:`${(r[rankMet]??0)/maxRank*100}%`,height:"100%",background:r.cor}}/></div>
+                </div>
+              </div>
+            ))}
+            {ranking.length===0&&<div style={{fontSize:12,color:"var(--text3)"}}>Nenhum usuário com ramal.</div>}
+          </div>
+
+          <div style={sCard}>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12,flexWrap:"wrap"}}>
+              <div style={{fontWeight:800,fontSize:14}}>⚖️ Comparar</div>
+              {porSdr.map(r=>{const on=cmpSel===null||cmpSel.includes(r.u.id);return(
+                <label key={r.u.id} style={{display:"flex",alignItems:"center",gap:5,fontSize:12,cursor:"pointer",padding:"3px 9px",borderRadius:14,border:`1.5px solid ${on?r.cor:"var(--border)"}`,color:on?"var(--text)":"var(--text3)"}}>
+                  <input type="checkbox" checked={on} onChange={()=>alternaCmp(r.u.id)} style={{accentColor:r.cor}}/>{primeiroNome(r.u.nome)}
+                </label>);})}
+            </div>
+            {cmpLista.length<2
+              ?<div style={{fontSize:12,color:"var(--text3)"}}>Marque duas ou mais pessoas para comparar.</div>
+              :<div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <thead><tr style={{color:"var(--text3)",textAlign:"left"}}>
+                    <th style={{padding:"6px 8px",borderBottom:"1px solid var(--border)"}}>Métrica</th>
+                    {cmpLista.map(r=><th key={r.u.id} style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}><span style={{display:"inline-block",width:9,height:9,borderRadius:5,background:r.cor,marginRight:6}}/>{primeiroNome(r.u.nome)}</th>)}
+                  </tr></thead>
+                  <tbody>
+                    {VT_METRICAS.map(m=>{const mx=Math.max(...cmpLista.map(r=>r[m.k]??0));return(
+                      <tr key={m.k}>
+                        <td style={{padding:"7px 8px",color:"var(--text2)",whiteSpace:"nowrap"}}>{m.rot}</td>
+                        {cmpLista.map(r=>{const v=r[m.k]??0;const lider=mx>0&&v===mx;return(
+                          <td key={r.u.id} style={{padding:"7px 8px",minWidth:110}}>
+                            <div style={{fontWeight:lider?900:600,color:lider?"var(--text)":"var(--text2)"}}>{m.fmt(v)}{lider&&<span style={{marginLeft:5,fontSize:10,color:"#059669"}}>▲ maior</span>}</div>
+                            <div style={{height:5,background:"var(--surface3)",borderRadius:3,overflow:"hidden",marginTop:4}}><div style={{width:`${mx?v/mx*100:0}%`,height:"100%",background:r.cor}}/></div>
+                          </td>);})}
+                      </tr>);})}
+                  </tbody>
+                </table>
+                {/* Ligações por dia, lado a lado */}
+                <div style={{fontSize:11,color:"var(--text3)",margin:"14px 0 6px"}}>Ligações por dia, lado a lado · clique numa barra para ver as ligações</div>
+                <div style={{height:110,display:"flex",alignItems:"flex-end",gap:diasPeriodo>20?2:8}}>
+                  {cmpDias.map(d=>(
+                    <div key={d.dia} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"flex-end",height:"100%"}}>
+                      <div style={{display:"flex",alignItems:"flex-end",gap:1,height:92,width:"100%",justifyContent:"center"}}>
+                        {cmpLista.map(r=>(
+                          <div key={r.u.id} onClick={()=>recortePessoa(r.u,`dia ${d.dia.split("-").reverse().slice(0,2).join("/")}`,l=>ymdLocal(new Date(l.hora))===d.dia)}
+                            title={`${primeiroNome(r.u.nome)} em ${d.dia.split("-").reverse().join("/")}: ${d.por[r.u.id]} ligações`}
+                            style={{flex:1,maxWidth:14,height:`${d.por[r.u.id]/maxCmpDia*90}px`,background:r.cor,borderRadius:"2px 2px 0 0",cursor:"pointer",minHeight:d.por[r.u.id]?2:0}}/>
+                        ))}
+                      </div>
+                      {diasPeriodo<=31&&<div style={{fontSize:9,color:"var(--text3)",marginTop:4}}>{d.dia.slice(8)}</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>}
+          </div>
+        </div>
+
+        {/* Tabela por pessoa (ordenável, números clicáveis) */}
+        <div style={{...sCard,marginBottom:20,overflowX:"auto"}}>
+          <div style={{fontWeight:800,fontSize:14,marginBottom:10}}>Por pessoa <span style={{fontWeight:400,color:"var(--text3)",fontSize:12}}>· clique no título da coluna para ordenar · clique num número para ver as ligações</span></div>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead><tr style={{color:"var(--text3)",textAlign:"left"}}>
+              {[["nome","Pessoa",1],["ramal","Ramal",1],["total","Ligações"],["total","/dia útil"],["atendidas","Atendidas"],["conversas","Conversas ≥1min"],["curtas","Atendidas <10s"],["tempo","Tempo conversa"],["tempoMedio","Média"],["leads","Contatos"],["comLead","Com lead"],["meta","Meta"]].map(([k,h,d],i)=>(
+                <th key={i} onClick={()=>ordena(sortP,setSortP,k,d||-1)} style={sTh}>{h}{seta(sortP,k)}</th>))}
+            </tr></thead>
+            <tbody>
+              {porSdrOrd.map(r=>{
+                const metaP=metaDiaria*diasUteis;const pct=metaP?r.total/metaP*100:0;
+                return <tr key={r.u.id} style={{background:sdrSel===r.u.id?"var(--surface3)":"transparent"}}>
+                  <td onClick={()=>{setSdrSel(sdrSel===r.u.id?"todos":r.u.id);setRecorte(null);}} title="Clique para filtrar a página por esta pessoa" style={{padding:"8px",fontWeight:700,whiteSpace:"nowrap",cursor:"pointer"}}><span style={{display:"inline-block",width:9,height:9,borderRadius:5,background:r.cor,marginRight:7}}/>{r.u.nome}{r.u.roles?.slug&&r.u.roles.slug!=="sdr"&&<span style={{fontSize:10,color:"var(--text3)",marginLeft:6}}>{r.u.roles.nome}</span>}</td>
+                  <td style={{padding:"8px",color:"var(--text3)"}}>{r.u.ramal}</td>
+                  <td style={{padding:"8px",fontWeight:800}}><span style={sNum} onClick={()=>recortePessoa(r.u,"ligações")}>{r.total}</span></td>
+                  <td style={{padding:"8px"}}>{(r.total/diasUteis).toFixed(1)}</td>
+                  <td style={{padding:"8px",color:"#059669"}}><span style={sNum} onClick={()=>recortePessoa(r.u,"atendidas",ehAtendida)}>{r.atendidas}</span> <span style={{color:"var(--text3)"}}>({r.taxa.toFixed(0)}%)</span></td>
+                  <td style={{padding:"8px"}}><span style={sNum} onClick={()=>recortePessoa(r.u,"conversas de 1 min ou mais",ehConversa)}>{r.conversas}</span></td>
+                  <td style={{padding:"8px"}}><span style={sNum} onClick={()=>recortePessoa(r.u,"atendidas com menos de 10s",ehCurta)}>{r.curtas}</span></td>
+                  <td style={{padding:"8px"}}>{segParaTexto(r.tempo)}</td>
+                  <td style={{padding:"8px"}}>{segParaTexto(r.tempoMedio)}</td>
+                  <td style={{padding:"8px"}}>{r.leads}</td>
+                  <td style={{padding:"8px"}}><span style={sNum} onClick={()=>recortePessoa(r.u,"com lead no CRM",l=>!!l.item_id)}>{r.comLead}</span><span style={{color:"var(--text3)"}}>/{r.total}</span></td>
+                  <td style={{padding:"8px",minWidth:130}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <div style={{flex:1,height:10,background:"var(--surface3)",borderRadius:5,overflow:"hidden"}}><div style={{width:`${Math.min(pct,100)}%`,height:"100%",background:corMeta(pct)}}/></div>
+                      <span style={{fontSize:12,fontWeight:900,color:corMeta(pct)}}>{Math.round(pct)}%</span>
+                    </div>
+                  </td>
+                </tr>;
+              })}
+              {porSdrOrd.length===0&&<tr><td colSpan={12} style={{padding:12,color:"var(--text3)"}}>Nenhum usuário com ramal.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Gráficos: por dia e por hora (barras clicáveis) */}
+        <div style={{display:"grid",gridTemplateColumns:width>=1000?"2fr 1fr":"1fr",gap:14,marginBottom:20}}>
+          <div style={sCard}>
+            <div style={{fontWeight:800,fontSize:14,marginBottom:4}}>Ligações por dia</div>
+            <div style={{fontSize:11,color:"var(--text3)",marginBottom:12}}>barra cheia = total · parte escura = atendidas · linha tracejada = meta diária{sdrSel==="todos"&&sdrs.length>1?" somada dos SDRs":""} · clique numa barra para ver as ligações do dia</div>
+            <div style={{position:"relative",height:160,display:"flex",alignItems:"flex-end",gap:diasPeriodo>31?1:4}}>
+              {(()=>{const meta=metaDiaria*nSdrMeta;const topo=Math.max(maxDia,meta);const y=160-(meta/topo)*150;return <div style={{position:"absolute",left:0,right:0,top:y,borderTop:"2px dashed #d97706",pointerEvents:"none"}}/>;})()}
+              {porDia.map(d=>{const topo=Math.max(maxDia,metaDiaria*nSdrMeta);const fds=[0,6].includes(new Date(d.dia+"T00:00:00").getDay());const rot=d.dia.split("-").reverse().join("/");return(
+                <div key={d.dia} onClick={()=>d.total&&abrirRecorte(`Dia ${rot}`,l=>ymdLocal(new Date(l.hora))===d.dia)} title={`${rot}: ${d.total} ligações, ${d.atend} atendidas`} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"flex-end",height:"100%",opacity:fds?.55:1,cursor:d.total?"pointer":"default"}}>
+                  {d.total>0&&diasPeriodo<=16&&<div style={{fontSize:10,fontWeight:700,color:"var(--text2)",marginBottom:2}}>{d.total}</div>}
+                  <div style={{width:"100%",maxWidth:28,height:`${d.total/topo*135}px`,background:"rgba(99,120,255,.28)",borderRadius:"4px 4px 0 0",position:"relative"}}>
+                    <div style={{position:"absolute",bottom:0,left:0,right:0,height:`${d.total?d.atend/d.total*100:0}%`,background:"var(--blue)",borderRadius:"4px 4px 0 0"}}/>
+                  </div>
+                  {diasPeriodo<=31&&<div style={{fontSize:9,color:"var(--text3)",marginTop:4}}>{d.dia.slice(8)}</div>}
+                </div>);})}
+            </div>
+          </div>
+          <div style={sCard}>
+            <div style={{fontWeight:800,fontSize:14,marginBottom:4}}>Melhor horário</div>
+            <div style={{fontSize:11,color:"var(--text3)",marginBottom:12}}>ligações por hora do dia · parte escura = atendidas · clique para ver</div>
+            <div style={{height:160,display:"flex",alignItems:"flex-end",gap:2}}>
+              {porHora.map((h,i)=>i>=7&&i<=21&&(
+                <div key={i} onClick={()=>h.total&&abrirRecorte(`Horário ${i}h`,l=>new Date(l.hora).getHours()===i)} title={`${i}h: ${h.total} ligações, ${h.atend} atendidas (${h.total?Math.round(h.atend/h.total*100):0}%)`} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"flex-end",height:"100%",cursor:h.total?"pointer":"default"}}>
+                  <div style={{width:"100%",height:`${h.total/maxHora*140}px`,background:"rgba(124,58,237,.28)",borderRadius:"3px 3px 0 0",position:"relative"}}>
+                    <div style={{position:"absolute",bottom:0,left:0,right:0,height:`${h.total?h.atend/h.total*100:0}%`,background:"#7c3aed",borderRadius:"3px 3px 0 0"}}/>
+                  </div>
+                  <div style={{fontSize:9,color:"var(--text3)",marginTop:4}}>{i}</div>
+                </div>))}
+            </div>
+          </div>
+        </div>
+
+        {/* Lista de ligações (filtros, ordenação, recorte) */}
+        <div ref={listaRef} style={{...sCard,overflowX:"auto",scrollMarginTop:8}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:10}}>
+            <div style={{fontWeight:800,fontSize:14}}>Ligações <span style={{fontWeight:400,color:"var(--text3)",fontSize:12}}>· {listaFinal.length}{listaFinal.length>300?" (mostrando 300)":""}</span></div>
+            {recorte&&<span style={{display:"inline-flex",alignItems:"center",gap:6,background:"var(--blue)",color:"#fff",borderRadius:14,padding:"3px 6px 3px 12px",fontSize:12,fontWeight:700}}>
+              Mostrando: {recorte.rot}
+              <button onClick={()=>setRecorte(null)} title="Voltar a mostrar todas" style={{...T.btn,background:"rgba(255,255,255,.25)",color:"#fff",padding:"0 7px",fontSize:12,borderRadius:10}}>✕</button>
+            </span>}
+            <div style={{flex:1}}/>
+            <input value={busca} onChange={e=>setBusca(e.target.value)} placeholder="Buscar telefone, lead ou pessoa" style={{...T.inp,width:220,padding:"6px 10px",fontSize:12,borderRadius:8}}/>
+            <select value={fStatus} onChange={e=>setFStatus(e.target.value)} style={sSel}>
+              <option value="todos">Status: todos</option>{statusDisponiveis.map(s=><option key={s} value={s}>{s}</option>)}
+            </select>
+            <select value={fDur} onChange={e=>setFDur(e.target.value)} style={sSel}>
+              <option value="todos">Duração: todas</option><option value="0">0s</option><option value="lt10">1 a 9s</option><option value="10a59">10 a 59s</option><option value="ge60">1 min ou mais</option>
+            </select>
+            <select value={fLead} onChange={e=>setFLead(e.target.value)} style={sSel}>
+              <option value="todos">Lead: todos</option><option value="com">Com lead no CRM</option><option value="sem">Sem lead no CRM</option>
+            </select>
+            {temFiltroLista&&<a onClick={limparFiltrosLista} style={{cursor:"pointer",color:"var(--blue)",fontSize:12}}>limpar filtros</a>}
+          </div>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead><tr style={{color:"var(--text3)",textAlign:"left"}}>
+              {[["hora","Quando",-1],["pessoa","Pessoa",1],[null,"Direção"],["telefone","Telefone",1],["lead","Lead no CRM",1],["status","Status",1],["duracao","Duração",-1],[null,"Gravação"]].map(([k,h,d],i)=>(
+                <th key={i} onClick={k?()=>ordena(sortL,setSortL,k,d):undefined} style={{...sTh,cursor:k?"pointer":"default"}}>{h}{k?seta(sortL,k):""}</th>))}
+            </tr></thead>
+            <tbody>
+              {listaFinal.slice(0,300).map(l=>(
+                <tr key={l.linkedid} style={{borderBottom:"1px solid var(--border)"}}>
+                  <td style={{padding:"7px 8px",whiteSpace:"nowrap"}}>{new Date(l.hora).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</td>
+                  <td style={{padding:"7px 8px",whiteSpace:"nowrap"}}>{nomeU(l.profile_id)}</td>
+                  <td style={{padding:"7px 8px"}}>{l.direcao==="saida"?"↗ saída":"↙ recebida"}</td>
+                  <td style={{padding:"7px 8px",whiteSpace:"nowrap"}}><a onClick={()=>setBusca(String(l.telefone||""))} title="Ver todas as ligações para este número" style={{cursor:"pointer"}}>{fmtFoneBR(l.telefone)}</a></td>
+                  <td style={{padding:"7px 8px",maxWidth:260,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={l.item_id?leadsNome[l.item_id]:""}>{l.item_id?(leadsNome[l.item_id]||"…"):<span style={{color:"var(--text3)"}}>sem lead</span>}</td>
+                  <td style={{padding:"7px 8px",color:corStatus(l.status),fontWeight:700}}>{l.status||"—"}</td>
+                  <td style={{padding:"7px 8px"}}>{segParaTexto(l.duracao_seg)}</td>
+                  <td style={{padding:"7px 8px"}}>{l.audio?<a href={l.audio} target="_blank" rel="noreferrer" style={{color:"var(--blue)"}}>▶ ouvir</a>:<span style={{color:"var(--text3)"}}>—</span>}</td>
+                </tr>
+              ))}
+              {listaFinal.length===0&&!loading&&<tr><td colSpan={8} style={{padding:12,color:"var(--text3)"}}>{recorte||temFiltroLista?"Nenhuma ligação com este recorte e filtros.":"Nenhuma ligação no período. Se o PABX acabou de ser conectado, clique em Sincronizar."}</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 function DashboardPage({onBack,wsId,allUsers,perms,profile}){
   const{isMobile,width}=useBreakpoint();
@@ -6443,6 +7017,7 @@ function AppContent() {
       onProfile={()=>setPage("profile")}
       onAdmin={()=>setPage("admin")}
       onDashboard={canDashboard?()=>setPage("dashboard"):null}
+      onAtividade={canDashboard?()=>setPage("atividade"):null}
       onLogout={signOut}
       open={sidebarOpen} onClose={()=>setSidebarOpen(false)}
     />
@@ -6477,6 +7052,12 @@ function AppContent() {
                     transition:"background .15s"}}
                   onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.12)"}
                   onMouseLeave={e=>e.currentTarget.style.background="transparent"}>📊</div>
+                <div onClick={()=>setPage("atividade")} title="Atividade SDR"
+                  style={{width:36,height:36,display:"flex",alignItems:"center",justifyContent:"center",
+                    borderRadius:8,cursor:"pointer",fontSize:18,color:"rgba(255,255,255,.6)",
+                    transition:"background .15s"}}
+                  onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.12)"}
+                  onMouseLeave={e=>e.currentTarget.style.background="transparent"}>📞</div>
                 <div style={{width:28,height:1,background:"rgba(255,255,255,.1)",margin:"4px 0"}}/>
               </>}
               {visibleBoards.map(b=>(
@@ -6510,7 +7091,7 @@ function AppContent() {
         {isMobile&&<div style={{background:"var(--surface)",borderBottom:"1px solid var(--border)",padding:"0 16px",height:52,display:"flex",alignItems:"center",gap:12,flexShrink:0}}>
           <button onClick={()=>setSidebarOpen(true)} style={{background:"none",border:"none",cursor:"pointer",fontSize:22,color:"var(--text)",lineHeight:1}}>☰</button>
           <div style={{fontWeight:800,fontSize:15,color:"var(--text)",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-            {page==="dashboard"?"📊 Dashboard":page==="profile"?"👤 Perfil":page==="admin"?"⚙️ Admin":(boards.find(b=>b.id===boardId)?.icon||"📋")+" "+(boards.find(b=>b.id===boardId)?.nome||"CRM")}
+            {page==="dashboard"?"📊 Dashboard":page==="atividade"?"📞 Atividade SDR":page==="profile"?"👤 Perfil":page==="admin"?"⚙️ Admin":(boards.find(b=>b.id===boardId)?.icon||"📋")+" "+(boards.find(b=>b.id===boardId)?.nome||"CRM")}
           </div>
         </div>}
         {page==="profile"&&<ProfilePage onBack={()=>setPage("board")}/>}
@@ -6522,6 +7103,9 @@ function AppContent() {
               <button onClick={()=>setPage("board")} style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"9px 20px",marginTop:8}}>Voltar</button>
             </div>
         }
+        {page==="atividade"&&canDashboard&&(
+          <AtividadeSdrPage onBack={()=>setPage("board")} allUsers={allUsers} perms={perms}/>
+        )}
         {page==="dashboard"&&(canDashboard
           ?<DashboardPage onBack={()=>setPage("board")} wsId={wsId} allUsers={allUsers} perms={perms} profile={profile}/>
           :<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"var(--text3)",fontSize:14,flexDirection:"column",gap:12}}>
