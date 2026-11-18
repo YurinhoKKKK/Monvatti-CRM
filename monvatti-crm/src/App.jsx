@@ -6479,6 +6479,8 @@ function AtividadeSdrPage({onBack,allUsers,perms}){
 const META_ETAPAS_COMPARECIMENTO=["Negociando","Proposta Enviada","Negócio Futuro","Descartou","Negócio Fechado"];
 const META_FAIXAS_SDR=[{min:33,valor:35},{min:30,valor:27},{min:21,valor:23},{min:0,valor:20}]; // do maior para o menor
 const META_MRR_CORTE=15000, META_PCT_BAIXO=0.25, META_PCT_ALTO=0.30;
+// Pessoas que não aparecem na tela de Metas (pedido da gestão em 18/11/2026): Theo Garcia e Mauricio Alves
+const META_OCULTOS=new Set(["1aa307f7-13f2-4b8f-aabe-2f46fab70881","1dc0a183-e111-4183-903f-cb0bb410abea"]);
 const faixaSdr=n=>META_FAIXAS_SDR.find(f=>n>=f.min);
 const proximaFaixaSdr=n=>[...META_FAIXAS_SDR].reverse().find(f=>f.min>n)||null;
 
@@ -6555,7 +6557,7 @@ function MetasPage({onBack,allUsers,profile,verTudo}){
       const f=faixaSdr(leads.length), prox=proximaFaixaSdr(leads.length);
       return {id,nome:nomeU(id),n:leads.length,leads,emAndamento,valorUnit:f.valor,total:leads.length*f.valor,prox,
         ganhoProx:prox?prox.min*prox.valor-leads.length*f.valor:0};
-    }).filter(l=>verTudo||l.id===meuId).filter(l=>papel(l.id)==="sdr"||l.n>0).sort((a,b)=>b.n-a.n);
+    }).filter(l=>!META_OCULTOS.has(l.id)).filter(l=>verTudo||l.id===meuId).filter(l=>papel(l.id)==="sdr"||l.n>0).sort((a,b)=>b.n-a.n);
   },[compMes,negMes,allUsers,verTudo,meuId]); // eslint-disable-line react-hooks/exhaustive-deps
   const compSemSdr=useMemo(()=>compMes.filter(n=>n.sdrs.length===0),[compMes]);
   const compMultiSdr=useMemo(()=>compMes.filter(n=>n.sdrs.length>1),[compMes]);
@@ -6574,7 +6576,7 @@ function MetasPage({onBack,allUsers,profile,verTudo}){
       const pct=mrr>=META_MRR_CORTE?META_PCT_ALTO:META_PCT_BAIXO;
       const mrrProj=mrr+mrrPend, pctProj=mrrProj>=META_MRR_CORTE?META_PCT_ALTO:META_PCT_BAIXO;
       return {id,nome:nomeU(id),fat,naoFat,mrr,mrrPend,pct,comissao:mrr*pct,faltaCorte:Math.max(0,META_MRR_CORTE-mrr),comissaoProj:mrrProj*pctProj,pctProj};
-    }).filter(l=>verTudo||l.id===meuId).filter(l=>papel(l.id)==="closer"||l.fat.length>0||l.naoFat.length>0).sort((a,b)=>b.mrr-a.mrr);
+    }).filter(l=>!META_OCULTOS.has(l.id)).filter(l=>verTudo||l.id===meuId).filter(l=>papel(l.id)==="closer"||l.fat.length>0||l.naoFat.length>0).sort((a,b)=>b.mrr-a.mrr);
   },[venMes,allUsers,verTudo,meuId]); // eslint-disable-line react-hooks/exhaustive-deps
   const fatSemCloser=useMemo(()=>venMes.filter(v=>v.faturado==="Sim"&&v.closers.length===0),[venMes]);
   const fatMultiCloser=useMemo(()=>venMes.filter(v=>v.faturado==="Sim"&&v.closers.length>1),[venMes]);
