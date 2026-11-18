@@ -936,9 +936,14 @@ function Cell({col,values,allColumns,responsibles,respByCol,allUsers,onChange,on
 // ─────────────────────────────────────────────────────────────────────────────
 // RICH EDITOR — contentEditable proper (sem execCommand obsoleto)
 // ─────────────────────────────────────────────────────────────────────────────
-function RichEditor({onSubmit,disabled=false}) {
+function RichEditor({onSubmit,disabled=false,initialHTML="",submitLabel="Publicar",onCancel=null}) {
   const editorRef = useRef(null);
-  const [isEmpty, setIsEmpty] = useState(true);
+  const [isEmpty, setIsEmpty] = useState(!initialHTML);
+  // Modo edição: carrega o texto atual uma vez, ao montar
+  useEffect(()=>{
+    if(initialHTML&&editorRef.current){editorRef.current.innerHTML=initialHTML;editorRef.current.focus();}
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[]);
   const [fontSize, setFontSize] = useState(13);
   const [align, setAlign] = useState("left");
 
@@ -1023,8 +1028,7 @@ function RichEditor({onSubmit,disabled=false}) {
     const html = editorRef.current?.innerHTML||"";
     if(!html||isEmpty||disabled) return;
     onSubmit(html);
-    editorRef.current.innerHTML="";
-    setIsEmpty(true);
+    if(!onCancel){editorRef.current.innerHTML="";setIsEmpty(true);}
   };
 
   const ToolBtn=({onClick,active=false,children,title=""})=>(
@@ -1107,11 +1111,15 @@ function RichEditor({onSubmit,disabled=false}) {
       {/* Footer */}
       <div style={{padding:"8px 12px",borderTop:"1px solid var(--border)",display:"flex",
         justifyContent:"flex-end",alignItems:"center",gap:12,background:"var(--surface2)"}}>
-        <span style={{fontSize:11,color:"var(--text3)"}}>⌘↵ publicar · ⌘B negrito · ⌘I itálico</span>
+        <span style={{fontSize:11,color:"var(--text3)"}}>⌘↵ {onCancel?"salvar":"publicar"} · ⌘B negrito · ⌘I itálico</span>
+        {onCancel&&<button onClick={onCancel} disabled={disabled}
+          style={{...T.btn,background:"none",color:"var(--text2)",border:"1px solid var(--border)",padding:"8px 16px",fontSize:13}}>
+          Cancelar
+        </button>}
         <button onClick={submit} disabled={disabled||isEmpty}
           style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"8px 20px",
             opacity:disabled||isEmpty?0.5:1,fontSize:13}}>
-          Publicar
+          {submitLabel}
         </button>
       </div>
     </div>
@@ -2515,8 +2523,39 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
   );
 }
 // ─────────────────────────────────────────────────────────────────────────────
-function ItemPanel({item,board,allUsers,currentUser,onClose,onUpdateValue,onRespChange,onAddUpdate,onDelUpdate}) {
+function ItemPanel({item,board,allUsers,currentUser,onClose,onUpdateValue,onRespChange,onAddUpdate,onDelUpdate,onEditUpdate,canModerar=false,verExcluidas=false}) {
   const [submitting,setSubmitting]=useState(false);
+  const [editId,setEditId]=useState(null);      // anotação em edição
+  const [histAberto,setHistAberto]=useState({}); // {updateId: true}
+  const [hist,setHist]=useState({});            // {updateId: [versões]}
+  const [excl,setExcl]=useState(null);          // anotações excluídas deste lead (gestão)
+  const [exclAberto,setExclAberto]=useState(false);
+  const nomeDe=id=>allUsers.find(x=>x.id===id)?.nome||"Usuário removido";
+  const dataHora=d=>d?new Date(d).toLocaleString("pt-BR"):"";
+  const carregaHist=async uid=>{
+    const {data}=await db.from("item_updates_historico").select("*").eq("update_id",uid).eq("acao","edicao").order("alterado_em",{ascending:false});
+    setHist(h=>({...h,[uid]:data||[]}));
+  };
+  const toggleHist=uid=>{
+    const abre=!histAberto[uid];
+    setHistAberto(h=>({...h,[uid]:abre}));
+    if(abre) carregaHist(uid);
+  };
+  const salvaEdicao=async(u,html)=>{
+    if(html===u.content){setEditId(null);return;}
+    setSubmitting(true);
+    const ok=await onEditUpdate(u.id,html);
+    setSubmitting(false);
+    if(ok){setEditId(null);if(histAberto[u.id]) carregaHist(u.id);}
+  };
+  const itemId=item.id;
+  useEffect(()=>{
+    if(!verExcluidas) return;
+    let vivo=true;
+    db.from("item_updates_historico").select("*").eq("item_id",itemId).eq("acao","exclusao").order("alterado_em",{ascending:false})
+      .then(({data})=>{if(vivo) setExcl(data||[]);});
+    return ()=>{vivo=false;};
+  },[itemId,verExcluidas,item.updates?.length]);
   const [activeTab,setActiveTab]=useState("anotacoes"); // "anotacoes" | "campos"
   const {isMobile}=useBreakpoint();
   const firstCol=board?.columns?.find(c=>c.tipo==="text"||c.tipo==="email"||c.tipo==="phone")||board?.columns?.[0];
@@ -2577,19 +2616,65 @@ function ItemPanel({item,board,allUsers,currentUser,onClose,onUpdateValue,onResp
                   <div style={{fontSize:12}}>Use o editor acima para registrar informações sobre este lead.</div>
                 </div>
               )}
-              {(item.updates||[]).map(u=>(
+              {(item.updates||[]).map(u=>{
+                const meu=!!u.created_by&&u.created_by===currentUser?.id;
+                const versoes=hist[u.id];
+                return (
                 <div key={u.id} style={{padding:"13px 16px",background:"var(--surface2)",borderRadius:10,
                   marginBottom:10,border:"1px solid var(--border)",borderLeft:"3px solid var(--alt)"}}>
                   <div style={{fontSize:11,color:"var(--text3)",marginBottom:8,display:"flex",alignItems:"center",gap:8,justifyContent:"space-between"}}>
-                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",minWidth:0}}>
                       <Avatar user={allUsers.find(x=>x.id===u.created_by)||currentUser} size={22}/>
-                      <span>{new Date(u.created_at).toLocaleString("pt-BR")}</span>
+                      <span>{dataHora(u.created_at)}</span>
+                      {u.edited_at&&(
+                        <button onClick={()=>toggleHist(u.id)} title="Ver versões anteriores"
+                          style={{background:"none",border:"none",padding:0,cursor:"pointer",fontSize:11,color:"#b45309",fontWeight:700,textDecoration:"underline"}}>
+                          editada em {dataHora(u.edited_at)}
+                        </button>
+                      )}
                     </div>
-                    <button onClick={()=>onDelUpdate(u.id)} style={{...T.iBtn,color:"#dc2626",borderColor:"#FEE2E280",fontSize:11}}>✕</button>
+                    <div style={{display:"flex",gap:6,flexShrink:0}}>
+                      {meu&&editId!==u.id&&<button onClick={()=>setEditId(u.id)} title="Editar anotação" style={{...T.iBtn,fontSize:11}}>✎</button>}
+                      {(meu||canModerar)&&<button onClick={()=>onDelUpdate(u.id)} title="Excluir anotação" style={{...T.iBtn,color:"#dc2626",borderColor:"#FEE2E280",fontSize:11}}>✕</button>}
+                    </div>
                   </div>
-                  <div style={{fontSize:13,color:"var(--text)",lineHeight:1.75}} dangerouslySetInnerHTML={{__html:linkifyHTML(u.content)}}/>
+                  {editId===u.id
+                    ? <RichEditor initialHTML={u.content} submitLabel="Salvar" disabled={submitting}
+                        onSubmit={html=>salvaEdicao(u,html)} onCancel={()=>setEditId(null)}/>
+                    : <div style={{fontSize:13,color:"var(--text)",lineHeight:1.75}} dangerouslySetInnerHTML={{__html:linkifyHTML(u.content)}}/>}
+                  {histAberto[u.id]&&(
+                    <div style={{marginTop:12,paddingTop:10,borderTop:"1px dashed var(--border)"}}>
+                      <div style={{fontSize:11,fontWeight:700,color:"var(--text3)",marginBottom:8}}>Versões anteriores (não podem ser apagadas)</div>
+                      {!versoes&&<div style={{fontSize:12,color:"var(--text3)"}}>Carregando…</div>}
+                      {versoes&&versoes.length===0&&<div style={{fontSize:12,color:"var(--text3)"}}>Nenhuma versão registrada.</div>}
+                      {(versoes||[]).map(h=>(
+                        <div key={h.id} style={{marginBottom:8,padding:"9px 11px",background:"var(--surface)",border:"1px solid var(--border)",borderRadius:8}}>
+                          <div style={{fontSize:11,color:"var(--text3)",marginBottom:5}}>
+                            Texto até {dataHora(h.alterado_em)}, alterado por {nomeDe(h.alterado_por)}
+                          </div>
+                          <div style={{fontSize:12.5,color:"var(--text2)",lineHeight:1.7}} dangerouslySetInnerHTML={{__html:linkifyHTML(h.conteudo_anterior||"")}}/>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              ))}
+              );})}
+              {verExcluidas&&excl&&excl.length>0&&(
+                <div style={{marginTop:18}}>
+                  <button onClick={()=>setExclAberto(v=>!v)}
+                    style={{background:"none",border:"none",padding:0,cursor:"pointer",fontSize:12,fontWeight:700,color:"#dc2626"}}>
+                    {exclAberto?"▾":"▸"} {excl.length} {excl.length===1?"anotação excluída":"anotações excluídas"}
+                  </button>
+                  {exclAberto&&excl.map(h=>(
+                    <div key={h.id} style={{marginTop:8,padding:"10px 12px",background:"var(--surface2)",border:"1px dashed #dc262660",borderRadius:8}}>
+                      <div style={{fontSize:11,color:"var(--text3)",marginBottom:5}}>
+                        Escrita por {nomeDe(h.autor_original)} em {dataHora(h.criada_em)}. Excluída por {nomeDe(h.alterado_por)} em {dataHora(h.alterado_em)}.
+                      </div>
+                      <div style={{fontSize:12.5,color:"var(--text2)",lineHeight:1.7}} dangerouslySetInnerHTML={{__html:linkifyHTML(h.conteudo_anterior||"")}}/>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -3444,6 +3529,14 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     upd(b=>{const item=b.groups.find(g=>g.id===gid)?.items.find(i=>i.id===iid);if(item)item.updates.unshift(data);});
     setSelItem(p=>p?({...p,updates:[data,...(p.updates||[])]}):p);
     toast("Publicado");
+  };
+  const editUpdate=async(uid,content)=>{
+    const {data,error}=await db.from("item_updates").update({content}).eq("id",uid).select().single();
+    if(error||!data){toast(error?.message||"Não foi possível salvar a edição","error");return false;}
+    upd(b=>{for(const g of b.groups){const it=g.items.find(i=>(i.updates||[]).some(u=>u.id===uid));if(it){it.updates=it.updates.map(u=>u.id===uid?data:u);break;}}});
+    setSelItem(p=>p?({...p,updates:(p.updates||[]).map(u=>u.id===uid?data:u)}):p);
+    toast("Anotação editada");
+    return true;
   };
   const delUpdate=async(uid)=>{
     await db.from("item_updates").delete().eq("id",uid);
@@ -4370,6 +4463,9 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
           onRespChange={(colId,ids)=>updateResp(selItem.id,selItem._gid,colId,ids)}
           onAddUpdate={html=>addUpdate(selItem.id,selItem._gid,html)}
           onDelUpdate={uid=>delUpdate(uid)}
+          onEditUpdate={editUpdate}
+          canModerar={!!(perms.all||perms.deleteAny)}
+          verExcluidas={!!(perms.all||perms.viewAll)}
         />
       )}
       {showFilters&&<FilterPanel board={board} allUsers={allUsers} filters={filters} setFilters={setFilters} onClose={()=>setShowFilters(false)}/>}
