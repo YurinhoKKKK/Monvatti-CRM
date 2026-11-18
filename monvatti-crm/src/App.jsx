@@ -6,7 +6,7 @@
  */
 import {
   useState, useEffect, useCallback, useRef,
-  createContext, useContext, useMemo
+  createContext, useContext, useMemo, Fragment
 } from "react";
 import { createPortal } from "https://esm.sh/react-dom@18";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -5149,7 +5149,7 @@ function BoardFormModal({initial={},onSave,onCancel}) {
 // ─────────────────────────────────────────────────────────────────────────────
 // SIDEBAR — responsiva com drawer no mobile
 // ─────────────────────────────────────────────────────────────────────────────
-function Sidebar({boards,currentBoardId,currentUser,wsNome,dark,onToggleDark,perms,onSelectBoard,onAddBoard,onEditBoard,onDelBoard,onReorderBoards,onBoardSettings,onDuplicateBoard,onProfile,onAdmin,onDashboard,onAtividade=null,onLogout,open,onClose}) {
+function Sidebar({boards,currentBoardId,currentUser,wsNome,dark,onToggleDark,perms,onSelectBoard,onAddBoard,onEditBoard,onDelBoard,onReorderBoards,onBoardSettings,onDuplicateBoard,onProfile,onAdmin,onDashboard,onAtividade=null,onMetas=null,onLogout,open,onClose}) {
   const {isMobile}=useBreakpoint();
   const [boardMenu,setBoardMenu]=useState(null);
   const [boardMenuPos,setBoardMenuPos]=useState({top:0,left:248});
@@ -5184,6 +5184,16 @@ function Sidebar({boards,currentBoardId,currentUser,wsNome,dark,onToggleDark,per
       </div>
       {/* Boards */}
       <div style={{padding:"14px 14px 6px",flex:1,overflowY:"auto"}}>
+        {/* Metas e Recompensas: todos veem (SDR e Closer só os próprios números) */}
+        {onMetas&&<div onClick={()=>{onMetas();if(isMobile)onClose();}}
+          style={{display:"flex",alignItems:"center",gap:9,padding:"9px 11px",borderRadius:9,cursor:"pointer",
+            color:"rgba(255,255,255,.65)",fontSize:13,marginBottom:onDashboard?2:10,background:"transparent"}}
+          onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.1)"}
+          onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+          <span style={{fontSize:17,flexShrink:0}}>🏆</span>
+          <span style={{flex:1}}>Metas e Recompensas</span>
+        </div>}
+        {!onDashboard&&onMetas&&<div style={{height:1,background:"rgba(255,255,255,.1)",marginBottom:10}}/>}
         {/* Dashboard link (só aparece para cargos com acesso) */}
         {onDashboard&&<>
           <div onClick={()=>{onDashboard();if(isMobile)onClose();}}
@@ -6349,6 +6359,271 @@ function AtividadeSdrPage({onBack,allUsers,perms}){
 }
 
 
+// ═══════════════════════════════════════════════════════════════════════════
+// METAS E RECOMPENSAS (SDRs e Closers). Regras decididas em 17/11/2026:
+//
+// SDR, por comparecimento no mês:
+//   Comparecimento = lead do quadro Negociações cuja coluna "Etapa" é uma de:
+//   Negociando, Proposta Enviada, Negócio Futuro, Descartou, Negócio Fechado.
+//   Mês = coluna "Data Reunião" (sem ela, a data em que o lead entrou em Negociações).
+//   Dono = quem está na coluna "SDR" do lead.
+//   Faixa (vale para TODOS os comparecimentos do mês, não é escalonado):
+//     33 ou mais → R$ 35 · 30 a 32 → R$ 27 · 21 a 29 → R$ 23 · até 20 → R$ 20
+//
+// Closer, por MRR faturado no mês:
+//   Conta venda do quadro Vendas com "Faturado" = Sim.
+//   MRR = Valor do Projeto ÷ Parcelas. Mês = "Data Entrada" (sem ela, data de criação).
+//   Dono = quem está na coluna "Closer" da venda.
+//   MRR do mês abaixo de R$ 15.000 → 25% · R$ 15.000 ou mais → 30%.
+//   A comissão incide sobre o MRR, uma única vez.
+//
+// Visibilidade: gestão (quem acessa o Dashboard) vê todos; SDR e Closer veem só
+// a própria linha. ATENÇÃO: é filtro de tela; com o RLS desligado, não é barreira de dados.
+// ═══════════════════════════════════════════════════════════════════════════
+const META_ETAPAS_COMPARECIMENTO=["Negociando","Proposta Enviada","Negócio Futuro","Descartou","Negócio Fechado"];
+const META_FAIXAS_SDR=[{min:33,valor:35},{min:30,valor:27},{min:21,valor:23},{min:0,valor:20}]; // do maior para o menor
+const META_MRR_CORTE=15000, META_PCT_BAIXO=0.25, META_PCT_ALTO=0.30;
+const faixaSdr=n=>META_FAIXAS_SDR.find(f=>n>=f.min);
+const proximaFaixaSdr=n=>[...META_FAIXAS_SDR].reverse().find(f=>f.min>n)||null;
+
+function MetasPage({onBack,allUsers,profile,verTudo}){
+  const{isMobile,width}=useBreakpoint();
+  const toast=useToast();
+  const mesAtual=ymdLocal(new Date()).slice(0,7);
+  const [mes,setMes]=useState(mesAtual);
+  const [loading,setLoading]=useState(true);
+  const [neg,setNeg]=useState([]);   // [{id,nome,etapa,dataRef,mes,temDataReuniao,sdrs:[ids]}]
+  const [ven,setVen]=useState([]);   // [{id,nome,faturado,mes,temDataEntrada,valor,parcelas,mrr,plano,closers:[ids]}]
+  const [avisos,setAvisos]=useState([]);
+  const [aberto,setAberto]=useState(null); // "sdr:<id>" | "closer:<id>"
+
+  const meses=useMemo(()=>{const out=[];const d=new Date();d.setDate(1);for(let i=0;i<12;i++){const v=ymdLocal(d).slice(0,7);out.push({v,l:d.toLocaleDateString("pt-BR",{month:"long",year:"numeric"})});d.setMonth(d.getMonth()-1);}return out;},[]);
+
+  useEffect(()=>{(async()=>{
+    setLoading(true);
+    try{
+      const {data:bds}=await db.from("boards").select("id,nome").in("nome",["Negociações","Vendas"]);
+      const bNeg=bds?.find(b=>b.nome==="Negociações"), bVen=bds?.find(b=>b.nome==="Vendas");
+      const av=[];
+      if(!bNeg) av.push("Quadro Negociações não encontrado.");
+      if(!bVen) av.push("Quadro Vendas não encontrado.");
+      const ids=[bNeg?.id,bVen?.id].filter(Boolean);
+      const {data:cols}=await db.from("columns").select("id,nome,tipo,board_id").in("board_id",ids);
+      const col=(b,nome)=>(cols||[]).find(c=>c.board_id===b?.id&&c.nome===nome);
+      const precisa=[[bNeg,"Etapa"],[bNeg,"Data Reunião"],[bNeg,"SDR"],[bVen,"Faturado"],[bVen,"Data Entrada"],[bVen,"Valor do Projeto"],[bVen,"Parcelas"],[bVen,"Closer"]];
+      precisa.forEach(([b,n])=>{if(b&&!col(b,n))av.push(`Coluna "${n}" não encontrada no quadro ${b.nome}.`);});
+      const paginado=async(montar)=>{const PAG=1000,out=[];for(let o=0;;o+=PAG){const {data,error}=await montar().range(o,o+PAG-1);if(error){av.push("Falha ao carregar dados: "+error.message);break;}out.push(...(data||[]));if(!data||data.length<PAG)break;}return out;};
+      const itens=await paginado(()=>db.from("items").select("id,board_id,created_at").in("board_id",ids).order("created_at"));
+      const colsValor=["Etapa","Data Reunião","Faturado","Data Entrada","Valor do Projeto","Parcelas","Plano","Empresa","Nome","Razão Social"].flatMap(n=>(cols||[]).filter(c=>c.nome===n).map(c=>c.id));
+      const vals=colsValor.length?await paginado(()=>db.from("item_values").select("item_id,column_id,value").in("column_id",colsValor).order("item_id")):[];
+      const colsResp=[col(bNeg,"SDR")?.id,col(bVen,"Closer")?.id].filter(Boolean);
+      const resps=colsResp.length?await paginado(()=>db.from("item_responsables").select("item_id,user_id,column_id").in("column_id",colsResp).order("item_id")):[];
+      const nomeCol=Object.fromEntries((cols||[]).map(c=>[c.id,c.nome]));
+      const V={}; // item → {nomeColuna: texto}
+      vals.forEach(v=>{const raw=(v.value&&typeof v.value==="object"&&"value" in v.value)?v.value.value:v.value;(V[v.item_id]=V[v.item_id]||{})[nomeCol[v.column_id]]=raw==null?"":String(raw).trim();});
+      const R={}; resps.forEach(r=>{(R[r.item_id]=R[r.item_id]||[]).push(r.user_id);});
+      const rotulo=v=>[v["Empresa"]&&v["Empresa"]!=="Empresa"?v["Empresa"]:v["Razão Social"],v["Nome"]&&v["Nome"]!=="Nome"?v["Nome"]:null].filter(Boolean).join(" · ")||"(sem nome)";
+      const ehData=t=>/^\d{4}-\d{2}-\d{2}/.test(t||"");
+      const num=t=>{const n=parseFloat(String(t??"").replace(/[^0-9.-]/g,""));return Number.isFinite(n)?n:0;};
+      const N=[],Ve=[];
+      itens.forEach(i=>{
+        const v=V[i.id]||{};
+        const criado=ymdLocal(new Date(i.created_at));
+        if(i.board_id===bNeg?.id){
+          const tem=ehData(v["Data Reunião"]);const dataRef=tem?v["Data Reunião"].slice(0,10):criado;
+          N.push({id:i.id,nome:rotulo(v),etapa:v["Etapa"]||"",dataRef,mes:dataRef.slice(0,7),temDataReuniao:tem,sdrs:[...new Set(R[i.id]||[])]});
+        }else if(i.board_id===bVen?.id){
+          const tem=ehData(v["Data Entrada"]);const dataRef=tem?v["Data Entrada"].slice(0,10):criado;
+          const valor=num(v["Valor do Projeto"]);const parcelas=num(v["Parcelas"])>0?num(v["Parcelas"]):1;
+          Ve.push({id:i.id,nome:rotulo(v),faturado:v["Faturado"]||"",dataRef,mes:dataRef.slice(0,7),temDataEntrada:tem,valor,parcelas,mrr:valor/parcelas,plano:v["Plano"]||"",closers:[...new Set(R[i.id]||[])]});
+        }
+      });
+      setNeg(N);setVen(Ve);setAvisos(av);
+    }catch(e){toast("Não foi possível carregar as metas: "+(e?.message||e),"error");}
+    finally{setLoading(false);}
+  })();},[]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const nomeU=id=>allUsers.find(u=>u.id===id)?.nome||"(usuário removido)";
+  const papel=id=>allUsers.find(u=>u.id===id)?.roles?.slug||"";
+  const meuId=profile?.id;
+
+  // ── SDRs
+  const negMes=useMemo(()=>neg.filter(n=>n.mes===mes),[neg,mes]);
+  const compMes=useMemo(()=>negMes.filter(n=>META_ETAPAS_COMPARECIMENTO.includes(n.etapa)),[negMes]);
+  const sdrLinhas=useMemo(()=>{
+    const ids=new Set(allUsers.filter(u=>u.roles?.slug==="sdr").map(u=>u.id));
+    compMes.forEach(n=>n.sdrs.forEach(id=>ids.add(id)));
+    return [...ids].map(id=>{
+      const leads=compMes.filter(n=>n.sdrs.includes(id));
+      const emAndamento=negMes.filter(n=>n.sdrs.includes(id)&&!META_ETAPAS_COMPARECIMENTO.includes(n.etapa));
+      const f=faixaSdr(leads.length), prox=proximaFaixaSdr(leads.length);
+      return {id,nome:nomeU(id),n:leads.length,leads,emAndamento,valorUnit:f.valor,total:leads.length*f.valor,prox,
+        ganhoProx:prox?prox.min*prox.valor-leads.length*f.valor:0};
+    }).filter(l=>verTudo||l.id===meuId).filter(l=>papel(l.id)==="sdr"||l.n>0).sort((a,b)=>b.n-a.n);
+  },[compMes,negMes,allUsers,verTudo,meuId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const compSemSdr=useMemo(()=>compMes.filter(n=>n.sdrs.length===0),[compMes]);
+  const compMultiSdr=useMemo(()=>compMes.filter(n=>n.sdrs.length>1),[compMes]);
+  const negSemEtapa=useMemo(()=>negMes.filter(n=>!n.etapa),[negMes]);
+
+  // ── Closers
+  const venMes=useMemo(()=>ven.filter(v=>v.mes===mes),[ven,mes]);
+  const closerLinhas=useMemo(()=>{
+    const ids=new Set(allUsers.filter(u=>u.roles?.slug==="closer").map(u=>u.id));
+    venMes.forEach(v=>v.closers.forEach(id=>ids.add(id)));
+    return [...ids].map(id=>{
+      const minhas=venMes.filter(v=>v.closers.includes(id));
+      const fat=minhas.filter(v=>v.faturado==="Sim");
+      const naoFat=minhas.filter(v=>v.faturado!=="Sim"&&v.faturado!=="Potencializa Amazon");
+      const mrr=fat.reduce((s,v)=>s+v.mrr,0), mrrPend=naoFat.reduce((s,v)=>s+v.mrr,0);
+      const pct=mrr>=META_MRR_CORTE?META_PCT_ALTO:META_PCT_BAIXO;
+      const mrrProj=mrr+mrrPend, pctProj=mrrProj>=META_MRR_CORTE?META_PCT_ALTO:META_PCT_BAIXO;
+      return {id,nome:nomeU(id),fat,naoFat,mrr,mrrPend,pct,comissao:mrr*pct,faltaCorte:Math.max(0,META_MRR_CORTE-mrr),comissaoProj:mrrProj*pctProj,pctProj};
+    }).filter(l=>verTudo||l.id===meuId).filter(l=>papel(l.id)==="closer"||l.fat.length>0||l.naoFat.length>0).sort((a,b)=>b.mrr-a.mrr);
+  },[venMes,allUsers,verTudo,meuId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const fatSemCloser=useMemo(()=>venMes.filter(v=>v.faturado==="Sim"&&v.closers.length===0),[venMes]);
+  const fatMultiCloser=useMemo(()=>venMes.filter(v=>v.faturado==="Sim"&&v.closers.length>1),[venMes]);
+
+  const totalSdr=sdrLinhas.reduce((s,l)=>s+l.total,0), totalCloser=closerLinhas.reduce((s,l)=>s+l.comissao,0);
+  const dataBR=d=>d?d.split("-").reverse().join("/"):"";
+  const sCard={background:"var(--surface)",border:"1px solid var(--border)",borderRadius:14,padding:16};
+  const sTh={padding:"6px 8px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap",textAlign:"left",color:"var(--text3)",fontWeight:600};
+  const sTd={padding:"8px"};
+  const corFaixa=v=>v>=35?"#059669":v>=27?"#0891b2":v>=23?"#d97706":"var(--text2)";
+
+  return(
+    <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",background:"var(--bg)"}}>
+      <div style={{background:"var(--surface)",borderBottom:"1px solid var(--border)",padding:isMobile?"12px 16px":"14px 24px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",flexShrink:0}}>
+        <button onClick={onBack} style={{...T.btn,background:"none",border:"1.5px solid var(--border)",color:"var(--text)",padding:"7px 14px",fontSize:12}}>← Voltar</button>
+        <div style={{fontSize:isMobile?16:18,fontWeight:900,color:"var(--text)"}}>🏆 Metas e Recompensas</div>
+        {loading&&<Spinner size={15}/>}
+        <select value={mes} onChange={e=>{setMes(e.target.value);setAberto(null);}} style={{...T.inp,width:"auto",padding:"7px 10px",fontSize:12,borderRadius:8,textTransform:"capitalize"}}>
+          {meses.map(m=><option key={m.v} value={m.v}>{m.l}</option>)}
+        </select>
+        {!verTudo&&<span style={{fontSize:11,color:"var(--text3)"}}>Você vê apenas os seus números.</span>}
+      </div>
+
+      <div style={{flex:1,overflowY:"auto",padding:isMobile?"12px":"20px 24px"}}>
+        {avisos.map((a,i)=><div key={i} style={{background:"#fef3c7",color:"#92400e",border:"1px solid #fcd34d",borderRadius:12,padding:"10px 14px",marginBottom:10,fontSize:13}}>⚠ {a}</div>)}
+
+        {verTudo&&<div style={{display:"grid",gridTemplateColumns:width>=900?"repeat(3,1fr)":"1fr",gap:14,marginBottom:20}}>
+          <div style={sCard}><div style={{fontSize:11,fontWeight:700,color:"var(--text3)",textTransform:"uppercase"}}>Recompensa dos SDRs no mês</div><div style={{fontSize:26,fontWeight:900,marginTop:6}}>{fmtBRL(totalSdr)}</div><div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>{compMes.length} comparecimento(s) no mês</div></div>
+          <div style={sCard}><div style={{fontSize:11,fontWeight:700,color:"var(--text3)",textTransform:"uppercase"}}>Comissão dos Closers no mês</div><div style={{fontSize:26,fontWeight:900,marginTop:6}}>{fmtBRL(totalCloser)}</div><div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>sobre {fmtBRL(closerLinhas.reduce((s,l)=>s+l.mrr,0))} de MRR faturado</div></div>
+          <div style={sCard}><div style={{fontSize:11,fontWeight:700,color:"var(--text3)",textTransform:"uppercase"}}>Total a pagar</div><div style={{fontSize:26,fontWeight:900,marginTop:6,color:"#059669"}}>{fmtBRL(totalSdr+totalCloser)}</div><div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>SDRs + Closers, conforme os dados de hoje</div></div>
+        </div>}
+
+        {/* ── SDRs ── */}
+        {(verTudo||sdrLinhas.length>0)&&<div style={{...sCard,marginBottom:20,overflowX:"auto"}}>
+          <div style={{fontWeight:800,fontSize:15,marginBottom:4}}>SDRs · comparecimentos</div>
+          <div style={{fontSize:11,color:"var(--text3)",marginBottom:12}}>
+            Conta lead de Negociações com Etapa em {META_ETAPAS_COMPARECIMENTO.join(", ")}, no mês da Data Reunião.
+            Faixas: até 20 → R$ 20 · 21 a 29 → R$ 23 · 30 a 32 → R$ 27 · 33 ou mais → R$ 35, valendo para todos os comparecimentos do mês.
+          </div>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+            <thead><tr>{["SDR","Comparecimentos","Faixa","Recompensa","Próxima faixa","Ainda sem comparecimento"].map(h=><th key={h} style={sTh}>{h}</th>)}</tr></thead>
+            <tbody>
+              {sdrLinhas.map(l=>{const k="sdr:"+l.id;const topo=33;return(
+                <Fragment key={l.id}>
+                  <tr onClick={()=>setAberto(aberto===k?null:k)} style={{cursor:"pointer",background:aberto===k?"var(--surface3)":"transparent"}}>
+                    <td style={{...sTd,fontWeight:800,whiteSpace:"nowrap"}}>{aberto===k?"▼":"▶"} {l.nome}</td>
+                    <td style={{...sTd,minWidth:220}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <span style={{fontWeight:900,fontSize:20,minWidth:30}}>{l.n}</span>
+                        <div style={{flex:1,height:12,background:"var(--surface3)",borderRadius:6,position:"relative",overflow:"hidden"}}>
+                          <div style={{width:`${Math.min(l.n/topo*100,100)}%`,height:"100%",background:corFaixa(l.valorUnit)==="var(--text2)"?"var(--blue)":corFaixa(l.valorUnit)}}/>
+                          {[21,30,33].map(m=><div key={m} title={`${m} comparecimentos`} style={{position:"absolute",top:0,bottom:0,left:`${m/topo*100}%`,width:2,background:"var(--bg)",marginLeft:-1}}/>)}
+                        </div>
+                      </div>
+                    </td>
+                    <td style={{...sTd,fontWeight:800,color:corFaixa(l.valorUnit),whiteSpace:"nowrap"}}>{fmtBRL(l.valorUnit)} cada</td>
+                    <td style={{...sTd,fontWeight:900,fontSize:16,whiteSpace:"nowrap"}}>{fmtBRL(l.total)}</td>
+                    <td style={{...sTd,fontSize:12,color:"var(--text2)"}}>{l.prox?<span>faltam <b>{l.prox.min-l.n}</b> para {fmtBRL(l.prox.valor)} cada <span style={{color:"#059669"}}>(+{fmtBRL(l.ganhoProx)})</span></span>:<b style={{color:"#059669"}}>faixa máxima</b>}</td>
+                    <td style={{...sTd,fontSize:12,color:"var(--text3)"}}>{l.emAndamento.length}</td>
+                  </tr>
+                  {aberto===k&&<tr><td colSpan={6} style={{padding:"4px 8px 14px 28px"}}>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                      <thead><tr>{["Lead","Etapa","Data","Conta?"].map(h=><th key={h} style={sTh}>{h}</th>)}</tr></thead>
+                      <tbody>
+                        {[...l.leads.map(n=>({...n,conta:true})),...l.emAndamento.map(n=>({...n,conta:false}))].sort((a,b)=>a.dataRef.localeCompare(b.dataRef)).map(n=>(
+                          <tr key={n.id} style={{borderBottom:"1px solid var(--border)",opacity:n.conta?1:.6}}>
+                            <td style={{padding:"6px 8px"}}>{n.nome}</td>
+                            <td style={{padding:"6px 8px"}}>{n.etapa||<span style={{color:"#d97706"}}>(Etapa vazia)</span>}</td>
+                            <td style={{padding:"6px 8px",whiteSpace:"nowrap"}}>{dataBR(n.dataRef)}{!n.temDataReuniao&&<span style={{color:"#d97706"}} title="Sem Data Reunião: usada a data de entrada em Negociações"> *</span>}</td>
+                            <td style={{padding:"6px 8px",fontWeight:700,color:n.conta?"#059669":"var(--text3)"}}>{n.conta?"sim":"não"}</td>
+                          </tr>))}
+                        {l.leads.length+l.emAndamento.length===0&&<tr><td colSpan={4} style={{padding:8,color:"var(--text3)"}}>Nenhum lead deste SDR em Negociações neste mês.</td></tr>}
+                      </tbody>
+                    </table>
+                  </td></tr>}
+                </Fragment>);})}
+              {sdrLinhas.length===0&&!loading&&<tr><td colSpan={6} style={{padding:12,color:"var(--text3)"}}>Nenhum SDR com dados neste mês.</td></tr>}
+            </tbody>
+          </table>
+          {verTudo&&(compSemSdr.length>0||compMultiSdr.length>0||negSemEtapa.length>0)&&<div style={{fontSize:12,color:"#d97706",marginTop:12,lineHeight:1.6}}>
+            {compSemSdr.length>0&&<div>⚠ {compSemSdr.length} comparecimento(s) do mês sem ninguém na coluna SDR; não entram para nenhum SDR: {compSemSdr.slice(0,6).map(n=>n.nome).join("; ")}{compSemSdr.length>6?"…":""}</div>}
+            {compMultiSdr.length>0&&<div>⚠ {compMultiSdr.length} comparecimento(s) com mais de um SDR; contam inteiro para cada um.</div>}
+            {negSemEtapa.length>0&&<div>⚠ {negSemEtapa.length} lead(s) de Negociações do mês com a Etapa vazia; não contam até a Etapa ser preenchida.</div>}
+          </div>}
+        </div>}
+
+        {/* ── Closers ── */}
+        {(verTudo||closerLinhas.length>0)&&<div style={{...sCard,overflowX:"auto"}}>
+          <div style={{fontWeight:800,fontSize:15,marginBottom:4}}>Closers · comissão sobre MRR</div>
+          <div style={{fontSize:11,color:"var(--text3)",marginBottom:12}}>
+            Conta venda com Faturado = Sim, no mês da Data Entrada. MRR = Valor do Projeto ÷ Parcelas.
+            MRR do mês abaixo de {fmtBRL(META_MRR_CORTE)} → 25% · a partir de {fmtBRL(META_MRR_CORTE)} → 30%. Comissão sobre o MRR, paga uma vez.
+          </div>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+            <thead><tr>{["Closer","MRR faturado","Faixa","Comissão","Para os 30%","Ainda não faturado"].map(h=><th key={h} style={sTh}>{h}</th>)}</tr></thead>
+            <tbody>
+              {closerLinhas.map(l=>{const k="closer:"+l.id;return(
+                <Fragment key={l.id}>
+                  <tr onClick={()=>setAberto(aberto===k?null:k)} style={{cursor:"pointer",background:aberto===k?"var(--surface3)":"transparent"}}>
+                    <td style={{...sTd,fontWeight:800,whiteSpace:"nowrap"}}>{aberto===k?"▼":"▶"} {l.nome}</td>
+                    <td style={{...sTd,minWidth:240}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <span style={{fontWeight:900,fontSize:16,minWidth:110}}>{fmtBRL(l.mrr)}</span>
+                        <div style={{flex:1,height:12,background:"var(--surface3)",borderRadius:6,overflow:"hidden"}}><div style={{width:`${Math.min(l.mrr/META_MRR_CORTE*100,100)}%`,height:"100%",background:l.mrr>=META_MRR_CORTE?"#059669":"var(--blue)"}}/></div>
+                      </div>
+                      <div style={{fontSize:11,color:"var(--text3)"}}>{l.fat.length} venda(s) faturada(s)</div>
+                    </td>
+                    <td style={{...sTd,fontWeight:800,color:l.pct===META_PCT_ALTO?"#059669":"var(--text2)"}}>{Math.round(l.pct*100)}%</td>
+                    <td style={{...sTd,fontWeight:900,fontSize:16,whiteSpace:"nowrap"}}>{fmtBRL(l.comissao)}</td>
+                    <td style={{...sTd,fontSize:12,color:"var(--text2)"}}>{l.faltaCorte>0?<span>faltam <b>{fmtBRL(l.faltaCorte)}</b> de MRR</span>:<b style={{color:"#059669"}}>faixa máxima</b>}</td>
+                    <td style={{...sTd,fontSize:12,color:"var(--text3)"}}>{l.naoFat.length?<span>{l.naoFat.length} venda(s), {fmtBRL(l.mrrPend)} de MRR · se faturar tudo: <b style={{color:"var(--text2)"}}>{fmtBRL(l.comissaoProj)}</b> ({Math.round(l.pctProj*100)}%)</span>:"—"}</td>
+                  </tr>
+                  {aberto===k&&<tr><td colSpan={6} style={{padding:"4px 8px 14px 28px"}}>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                      <thead><tr>{["Venda","Plano","Data Entrada","Valor do Projeto","Parcelas","MRR","Faturado","Conta?"].map(h=><th key={h} style={sTh}>{h}</th>)}</tr></thead>
+                      <tbody>
+                        {[...l.fat.map(v=>({...v,conta:true})),...l.naoFat.map(v=>({...v,conta:false}))].sort((a,b)=>a.dataRef.localeCompare(b.dataRef)).map(v=>(
+                          <tr key={v.id} style={{borderBottom:"1px solid var(--border)",opacity:v.conta?1:.6}}>
+                            <td style={{padding:"6px 8px"}}>{v.nome}</td>
+                            <td style={{padding:"6px 8px"}}>{v.plano||"—"}</td>
+                            <td style={{padding:"6px 8px",whiteSpace:"nowrap"}}>{dataBR(v.dataRef)}{!v.temDataEntrada&&<span style={{color:"#d97706"}} title="Sem Data Entrada: usada a data de criação"> *</span>}</td>
+                            <td style={{padding:"6px 8px",whiteSpace:"nowrap"}}>{fmtBRL(v.valor)}</td>
+                            <td style={{padding:"6px 8px"}}>{v.parcelas}</td>
+                            <td style={{padding:"6px 8px",whiteSpace:"nowrap",fontWeight:700}}>{fmtBRL(v.mrr)}</td>
+                            <td style={{padding:"6px 8px"}}>{v.faturado||<span style={{color:"#d97706"}}>(vazio)</span>}</td>
+                            <td style={{padding:"6px 8px",fontWeight:700,color:v.conta?"#059669":"var(--text3)"}}>{v.conta?"sim":"não"}</td>
+                          </tr>))}
+                        {l.fat.length+l.naoFat.length===0&&<tr><td colSpan={8} style={{padding:8,color:"var(--text3)"}}>Nenhuma venda deste closer neste mês.</td></tr>}
+                      </tbody>
+                    </table>
+                  </td></tr>}
+                </Fragment>);})}
+              {closerLinhas.length===0&&!loading&&<tr><td colSpan={6} style={{padding:12,color:"var(--text3)"}}>Nenhum closer com dados neste mês.</td></tr>}
+            </tbody>
+          </table>
+          {verTudo&&(fatSemCloser.length>0||fatMultiCloser.length>0)&&<div style={{fontSize:12,color:"#d97706",marginTop:12,lineHeight:1.6}}>
+            {fatSemCloser.length>0&&<div>⚠ {fatSemCloser.length} venda(s) faturada(s) do mês sem ninguém na coluna Closer ({fmtBRL(fatSemCloser.reduce((s,v)=>s+v.mrr,0))} de MRR); não entram para nenhum closer.</div>}
+            {fatMultiCloser.length>0&&<div>⚠ {fatMultiCloser.length} venda(s) faturada(s) com mais de um closer; o MRR conta inteiro para cada um.</div>}
+          </div>}
+        </div>}
+      </div>
+    </div>
+  );
+}
+
 function DashboardPage({onBack,wsId,allUsers,perms,profile}){
   const{isMobile,width}=useBreakpoint();
   const toast=useToast();
@@ -7018,6 +7293,7 @@ function AppContent() {
       onAdmin={()=>setPage("admin")}
       onDashboard={canDashboard?()=>setPage("dashboard"):null}
       onAtividade={canDashboard?()=>setPage("atividade"):null}
+      onMetas={()=>setPage("metas")}
       onLogout={signOut}
       open={sidebarOpen} onClose={()=>setSidebarOpen(false)}
     />
@@ -7045,6 +7321,11 @@ function AppContent() {
               <div style={{width:36,height:36,background:"var(--alt)",borderRadius:10,
                 display:"flex",alignItems:"center",justifyContent:"center",
                 fontWeight:900,fontSize:18,color:"#fff",marginBottom:8,flexShrink:0}}>M</div>
+              <div onClick={()=>setPage("metas")} title="Metas e Recompensas"
+                style={{width:36,height:36,display:"flex",alignItems:"center",justifyContent:"center",
+                  borderRadius:8,cursor:"pointer",fontSize:18,color:"rgba(255,255,255,.6)",transition:"background .15s"}}
+                onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.12)"}
+                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>🏆</div>
               {canDashboard&&<>
                 <div onClick={()=>setPage("dashboard")} title="Dashboard"
                   style={{width:36,height:36,display:"flex",alignItems:"center",justifyContent:"center",
@@ -7091,7 +7372,7 @@ function AppContent() {
         {isMobile&&<div style={{background:"var(--surface)",borderBottom:"1px solid var(--border)",padding:"0 16px",height:52,display:"flex",alignItems:"center",gap:12,flexShrink:0}}>
           <button onClick={()=>setSidebarOpen(true)} style={{background:"none",border:"none",cursor:"pointer",fontSize:22,color:"var(--text)",lineHeight:1}}>☰</button>
           <div style={{fontWeight:800,fontSize:15,color:"var(--text)",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-            {page==="dashboard"?"📊 Dashboard":page==="atividade"?"📞 Atividade SDR":page==="profile"?"👤 Perfil":page==="admin"?"⚙️ Admin":(boards.find(b=>b.id===boardId)?.icon||"📋")+" "+(boards.find(b=>b.id===boardId)?.nome||"CRM")}
+            {page==="dashboard"?"📊 Dashboard":page==="atividade"?"📞 Atividade SDR":page==="metas"?"🏆 Metas":page==="profile"?"👤 Perfil":page==="admin"?"⚙️ Admin":(boards.find(b=>b.id===boardId)?.icon||"📋")+" "+(boards.find(b=>b.id===boardId)?.nome||"CRM")}
           </div>
         </div>}
         {page==="profile"&&<ProfilePage onBack={()=>setPage("board")}/>}
@@ -7103,6 +7384,9 @@ function AppContent() {
               <button onClick={()=>setPage("board")} style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"9px 20px",marginTop:8}}>Voltar</button>
             </div>
         }
+        {page==="metas"&&(
+          <MetasPage onBack={()=>setPage("board")} allUsers={allUsers} profile={profile} verTudo={canDashboard}/>
+        )}
         {page==="atividade"&&canDashboard&&(
           <AtividadeSdrPage onBack={()=>setPage("board")} allUsers={allUsers} perms={perms}/>
         )}
