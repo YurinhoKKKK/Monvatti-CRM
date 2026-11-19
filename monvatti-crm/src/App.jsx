@@ -6479,6 +6479,8 @@ function AtividadeSdrPage({onBack,allUsers,perms}){
 const META_ETAPAS_COMPARECIMENTO=["Negociando","Proposta Enviada","Negócio Futuro","Descartou","Negócio Fechado"];
 const META_FAIXAS_SDR=[{min:33,valor:35},{min:30,valor:27},{min:21,valor:23},{min:0,valor:20}]; // do maior para o menor
 const META_MRR_CORTE=15000, META_PCT_BAIXO=0.25, META_PCT_ALTO=0.30;
+// Renovação (lead com renovacao_de): comissão fixa de 10% sobre o MRR; não soma para a faixa de 25%/30%.
+const META_PCT_RENOVACAO=0.10;
 // Pessoas que não aparecem na tela de Metas (pedido da gestão em 18/11/2026): Theo Garcia e Mauricio Alves
 const META_OCULTOS=new Set(["1aa307f7-13f2-4b8f-aabe-2f46fab70881","1dc0a183-e111-4183-903f-cb0bb410abea"]);
 const faixaSdr=n=>META_FAIXAS_SDR.find(f=>n>=f.min);
@@ -6511,7 +6513,7 @@ function MetasPage({onBack,allUsers,profile,verTudo}){
       const precisa=[[bNeg,"Etapa"],[bNeg,"Data Reunião"],[bNeg,"SDR"],[bVen,"Faturado"],[bVen,"Data Entrada"],[bVen,"Valor do Projeto"],[bVen,"Parcelas"],[bVen,"Closer"]];
       precisa.forEach(([b,n])=>{if(b&&!col(b,n))av.push(`Coluna "${n}" não encontrada no quadro ${b.nome}.`);});
       const paginado=async(montar)=>{const PAG=1000,out=[];for(let o=0;;o+=PAG){const {data,error}=await montar().range(o,o+PAG-1);if(error){av.push("Falha ao carregar dados: "+error.message);break;}out.push(...(data||[]));if(!data||data.length<PAG)break;}return out;};
-      const itens=await paginado(()=>db.from("items").select("id,board_id,created_at").in("board_id",ids).order("created_at"));
+      const itens=await paginado(()=>db.from("items").select("id,board_id,created_at,renovacao_de").in("board_id",ids).order("created_at"));
       const colsValor=["Etapa","Data Reunião","Faturado","Data Entrada","Valor do Projeto","Parcelas","Plano","Empresa","Nome","Razão Social"].flatMap(n=>(cols||[]).filter(c=>c.nome===n).map(c=>c.id));
       const vals=colsValor.length?await paginado(()=>db.from("item_values").select("item_id,column_id,value").in("column_id",colsValor).order("item_id")):[];
       const colsResp=[col(bNeg,"SDR")?.id,col(bVen,"Closer")?.id].filter(Boolean);
@@ -6533,7 +6535,7 @@ function MetasPage({onBack,allUsers,profile,verTudo}){
         }else if(i.board_id===bVen?.id){
           const tem=ehData(v["Data Entrada"]);const dataRef=tem?v["Data Entrada"].slice(0,10):criado;
           const valor=num(v["Valor do Projeto"]);const parcelas=num(v["Parcelas"])>0?num(v["Parcelas"]):1;
-          Ve.push({id:i.id,nome:rotulo(v),faturado:v["Faturado"]||"",dataRef,mes:dataRef.slice(0,7),temDataEntrada:tem,valor,parcelas,mrr:valor/parcelas,plano:v["Plano"]||"",closers:[...new Set(R[i.id]||[])]});
+          Ve.push({id:i.id,nome:rotulo(v),faturado:v["Faturado"]||"",dataRef,mes:dataRef.slice(0,7),temDataEntrada:tem,valor,parcelas,mrr:valor/parcelas,plano:v["Plano"]||"",renov:!!i.renovacao_de,closers:[...new Set(R[i.id]||[])]});
         }
       });
       setNeg(N);setVen(Ve);setAvisos(av);
@@ -6572,11 +6574,15 @@ function MetasPage({onBack,allUsers,profile,verTudo}){
       const minhas=venMes.filter(v=>v.closers.includes(id));
       const fat=minhas.filter(v=>v.faturado==="Sim");
       const naoFat=minhas.filter(v=>v.faturado!=="Sim"&&v.faturado!=="Potencializa Amazon");
-      const mrr=fat.reduce((s,v)=>s+v.mrr,0), mrrPend=naoFat.reduce((s,v)=>s+v.mrr,0);
+      // Vendas novas definem a faixa (25%/30%); renovações pagam 10% fixo e ficam fora da faixa.
+      const soma=(l,ren)=>l.filter(v=>v.renov===ren).reduce((s,v)=>s+v.mrr,0);
+      const mrr=soma(fat,false), mrrRen=soma(fat,true);
+      const mrrPendNovo=soma(naoFat,false), mrrPendRen=soma(naoFat,true), mrrPend=mrrPendNovo+mrrPendRen;
       const pct=mrr>=META_MRR_CORTE?META_PCT_ALTO:META_PCT_BAIXO;
-      const mrrProj=mrr+mrrPend, pctProj=mrrProj>=META_MRR_CORTE?META_PCT_ALTO:META_PCT_BAIXO;
-      return {id,nome:nomeU(id),fat,naoFat,mrr,mrrPend,pct,comissao:mrr*pct,faltaCorte:Math.max(0,META_MRR_CORTE-mrr),comissaoProj:mrrProj*pctProj,pctProj};
-    }).filter(l=>!META_OCULTOS.has(l.id)).filter(l=>verTudo||l.id===meuId).filter(l=>papel(l.id)==="closer"||l.fat.length>0||l.naoFat.length>0).sort((a,b)=>b.mrr-a.mrr);
+      const mrrProj=mrr+mrrPendNovo, pctProj=mrrProj>=META_MRR_CORTE?META_PCT_ALTO:META_PCT_BAIXO;
+      const comissaoRen=mrrRen*META_PCT_RENOVACAO;
+      return {id,nome:nomeU(id),fat,naoFat,mrr,mrrRen,comissaoRen,nRen:fat.filter(v=>v.renov).length,mrrPend,pct,comissao:mrr*pct+comissaoRen,faltaCorte:Math.max(0,META_MRR_CORTE-mrr),comissaoProj:mrrProj*pctProj+(mrrRen+mrrPendRen)*META_PCT_RENOVACAO,pctProj};
+    }).filter(l=>!META_OCULTOS.has(l.id)).filter(l=>verTudo||l.id===meuId).filter(l=>papel(l.id)==="closer"||l.fat.length>0||l.naoFat.length>0).sort((a,b)=>b.comissao-a.comissao||b.mrr-a.mrr);
   },[venMes,allUsers,verTudo,meuId]); // eslint-disable-line react-hooks/exhaustive-deps
   const fatSemCloser=useMemo(()=>venMes.filter(v=>v.faturado==="Sim"&&v.closers.length===0),[venMes]);
   const fatMultiCloser=useMemo(()=>venMes.filter(v=>v.faturado==="Sim"&&v.closers.length>1),[venMes]);
@@ -6605,7 +6611,7 @@ function MetasPage({onBack,allUsers,profile,verTudo}){
 
         {verTudo&&<div style={{display:"grid",gridTemplateColumns:width>=900?"repeat(3,1fr)":"1fr",gap:14,marginBottom:20}}>
           <div style={sCard}><div style={{fontSize:11,fontWeight:700,color:"var(--text3)",textTransform:"uppercase"}}>Recompensa dos SDRs no mês</div><div style={{fontSize:26,fontWeight:900,marginTop:6}}>{fmtBRL(totalSdr)}</div><div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>{compMes.length} comparecimento(s) no mês</div></div>
-          <div style={sCard}><div style={{fontSize:11,fontWeight:700,color:"var(--text3)",textTransform:"uppercase"}}>Comissão dos Closers no mês</div><div style={{fontSize:26,fontWeight:900,marginTop:6}}>{fmtBRL(totalCloser)}</div><div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>sobre {fmtBRL(closerLinhas.reduce((s,l)=>s+l.mrr,0))} de MRR faturado</div></div>
+          <div style={sCard}><div style={{fontSize:11,fontWeight:700,color:"var(--text3)",textTransform:"uppercase"}}>Comissão dos Closers no mês</div><div style={{fontSize:26,fontWeight:900,marginTop:6}}>{fmtBRL(totalCloser)}</div><div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>sobre {fmtBRL(closerLinhas.reduce((s,l)=>s+l.mrr,0))} de MRR novo e {fmtBRL(closerLinhas.reduce((s,l)=>s+l.mrrRen,0))} de renovações</div></div>
           <div style={sCard}><div style={{fontSize:11,fontWeight:700,color:"var(--text3)",textTransform:"uppercase"}}>Total a pagar</div><div style={{fontSize:26,fontWeight:900,marginTop:6,color:"#059669"}}>{fmtBRL(totalSdr+totalCloser)}</div><div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>SDRs + Closers, conforme os dados de hoje</div></div>
         </div>}
 
@@ -6668,10 +6674,11 @@ function MetasPage({onBack,allUsers,profile,verTudo}){
           <div style={{fontWeight:800,fontSize:15,marginBottom:4}}>Closers · comissão sobre MRR</div>
           <div style={{fontSize:11,color:"var(--text3)",marginBottom:12}}>
             Conta venda com Faturado = Sim, no mês da Data Entrada. MRR = Valor do Projeto ÷ Parcelas.
-            MRR do mês abaixo de {fmtBRL(META_MRR_CORTE)} → 25% · a partir de {fmtBRL(META_MRR_CORTE)} → 30%. Comissão sobre o MRR, paga uma vez.
+            MRR de vendas novas no mês abaixo de {fmtBRL(META_MRR_CORTE)} → 25% · a partir de {fmtBRL(META_MRR_CORTE)} → 30%.
+            Renovação → {Math.round(META_PCT_RENOVACAO*100)}% fixo, sem contar para a faixa. Comissão sobre o MRR, paga uma vez.
           </div>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-            <thead><tr>{["Closer","MRR faturado","Faixa","Comissão","Para os 30%","Ainda não faturado"].map(h=><th key={h} style={sTh}>{h}</th>)}</tr></thead>
+            <thead><tr>{["Closer","MRR faturado (vendas novas)","Faixa","Comissão","Para os 30%","Ainda não faturado"].map(h=><th key={h} style={sTh}>{h}</th>)}</tr></thead>
             <tbody>
               {closerLinhas.map(l=>{const k="closer:"+l.id;return(
                 <Fragment key={l.id}>
@@ -6682,7 +6689,7 @@ function MetasPage({onBack,allUsers,profile,verTudo}){
                         <span style={{fontWeight:900,fontSize:16,minWidth:110}}>{fmtBRL(l.mrr)}</span>
                         <div style={{flex:1,height:12,background:"var(--surface3)",borderRadius:6,overflow:"hidden"}}><div style={{width:`${Math.min(l.mrr/META_MRR_CORTE*100,100)}%`,height:"100%",background:l.mrr>=META_MRR_CORTE?"#059669":"var(--blue)"}}/></div>
                       </div>
-                      <div style={{fontSize:11,color:"var(--text3)"}}>{l.fat.length} venda(s) faturada(s)</div>
+                      <div style={{fontSize:11,color:"var(--text3)"}}>{l.fat.length-l.nRen} venda(s) nova(s) faturada(s){l.nRen>0&&<span style={{color:"#7c3aed",fontWeight:700}}> · {l.nRen} renovação(ões): {fmtBRL(l.mrrRen)} de MRR a {Math.round(META_PCT_RENOVACAO*100)}% = {fmtBRL(l.comissaoRen)}</span>}</div>
                     </td>
                     <td style={{...sTd,fontWeight:800,color:l.pct===META_PCT_ALTO?"#059669":"var(--text2)"}}>{Math.round(l.pct*100)}%</td>
                     <td style={{...sTd,fontWeight:900,fontSize:16,whiteSpace:"nowrap"}}>{fmtBRL(l.comissao)}</td>
@@ -6691,11 +6698,12 @@ function MetasPage({onBack,allUsers,profile,verTudo}){
                   </tr>
                   {aberto===k&&<tr><td colSpan={6} style={{padding:"4px 8px 14px 28px"}}>
                     <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                      <thead><tr>{["Venda","Plano","Data Entrada","Valor do Projeto","Parcelas","MRR","Faturado","Conta?"].map(h=><th key={h} style={sTh}>{h}</th>)}</tr></thead>
+                      <thead><tr>{["Venda","Tipo","Plano","Data Entrada","Valor do Projeto","Parcelas","MRR","Faturado","Conta?","Comissão"].map(h=><th key={h} style={sTh}>{h}</th>)}</tr></thead>
                       <tbody>
                         {[...l.fat.map(v=>({...v,conta:true})),...l.naoFat.map(v=>({...v,conta:false}))].sort((a,b)=>a.dataRef.localeCompare(b.dataRef)).map(v=>(
                           <tr key={v.id} style={{borderBottom:"1px solid var(--border)",opacity:v.conta?1:.6}}>
                             <td style={{padding:"6px 8px"}}>{v.nome}</td>
+                            <td style={{padding:"6px 8px",whiteSpace:"nowrap",fontWeight:700,color:v.renov?"#7c3aed":"var(--text2)"}}>{v.renov?"Renovação":"Nova"}</td>
                             <td style={{padding:"6px 8px"}}>{v.plano||"—"}</td>
                             <td style={{padding:"6px 8px",whiteSpace:"nowrap"}}>{dataBR(v.dataRef)}{!v.temDataEntrada&&<span style={{color:"#d97706"}} title="Sem Data Entrada: usada a data de criação"> *</span>}</td>
                             <td style={{padding:"6px 8px",whiteSpace:"nowrap"}}>{fmtBRL(v.valor)}</td>
@@ -6703,8 +6711,9 @@ function MetasPage({onBack,allUsers,profile,verTudo}){
                             <td style={{padding:"6px 8px",whiteSpace:"nowrap",fontWeight:700}}>{fmtBRL(v.mrr)}</td>
                             <td style={{padding:"6px 8px"}}>{v.faturado||<span style={{color:"#d97706"}}>(vazio)</span>}</td>
                             <td style={{padding:"6px 8px",fontWeight:700,color:v.conta?"#059669":"var(--text3)"}}>{v.conta?"sim":"não"}</td>
+                            <td style={{padding:"6px 8px",whiteSpace:"nowrap"}}>{v.conta?<span><b>{fmtBRL(v.mrr*(v.renov?META_PCT_RENOVACAO:l.pct))}</b> ({Math.round((v.renov?META_PCT_RENOVACAO:l.pct)*100)}%)</span>:"—"}</td>
                           </tr>))}
-                        {l.fat.length+l.naoFat.length===0&&<tr><td colSpan={8} style={{padding:8,color:"var(--text3)"}}>Nenhuma venda deste closer neste mês.</td></tr>}
+                        {l.fat.length+l.naoFat.length===0&&<tr><td colSpan={10} style={{padding:8,color:"var(--text3)"}}>Nenhuma venda deste closer neste mês.</td></tr>}
                       </tbody>
                     </table>
                   </td></tr>}
