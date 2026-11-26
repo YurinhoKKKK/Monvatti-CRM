@@ -3455,6 +3455,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
   const [groupCreateM,setGroupCreateM]=useState(false);
   const [groupSettingsM,setGroupSettingsM]=useState(null); // group obj
   const [moveItemsM,setMoveItemsM]=useState(false); // mover selecionados
+  const [moveGroupM,setMoveGroupM]=useState(false); // mover selecionados para outro grupo do quadro
   const [parentGroupM,setParentGroupM]=useState(null); // null=fechado, {}=criar, {id,...}=editar
 
   const loadBoard=useCallback(async bid=>{
@@ -4418,6 +4419,42 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     setDragState(null);setDragOverGroup(null);
   };
 
+  // ── Mover os selecionados para outro grupo do mesmo quadro (em lote)
+  const bulkMoveToGroup=async(tgt,novoSdr)=>{
+    const ids=[...selected];
+    const plan=[];
+    ids.forEach(id=>{const src=board.groups.find(g=>(g.items||[]).some(i=>i.id===id));if(src&&src.id!==tgt.id)plan.push({id,srcId:src.id});});
+    const colSdr=(board.columns||[]).find(c=>c.tipo==="user"&&c.nome==="SDR");
+    const movIds=plan.map(p=>p.id);
+    let erro=null;
+    for(let i=0;i<movIds.length&&!erro;i+=100){
+      const {error}=await db.from("items").update({group_id:tgt.id,ordem:9999}).in("id",movIds.slice(i,i+100));
+      if(error) erro=error;
+    }
+    if(!erro&&novoSdr&&colSdr&&movIds.length){
+      for(let i=0;i<movIds.length&&!erro;i+=100){
+        const lote=movIds.slice(i,i+100);
+        const {error:e1}=await db.from("item_responsables").delete().in("item_id",lote).eq("column_id",colSdr.id);
+        if(e1){erro=e1;break;}
+        const {error:e2}=await db.from("item_responsables").insert(lote.map(iid=>({item_id:iid,user_id:novoSdr,column_id:colSdr.id})));
+        if(e2) erro=e2;
+      }
+    }
+    setMoveGroupM(false);setSelected(new Set());
+    if(erro){toast("Falha ao mover: "+(erro.message||"erro")+". Recarregando para mostrar o estado real.","error");loadBoard(boardId);return;}
+    upd(b=>{
+      const t=b.groups.find(g=>g.id===tgt.id);if(!t)return;
+      plan.forEach(p=>{
+        const src=b.groups.find(g=>g.id===p.srcId);const it=src?.items.find(i=>i.id===p.id);if(!it)return;
+        src.items=src.items.filter(i=>i.id!==p.id);
+        const novo={...it,group_id:tgt.id};
+        if(novoSdr&&colSdr){novo.respByCol={...(it.respByCol||{}),[colSdr.id]:[novoSdr]};novo.responsibles=Object.values(novo.respByCol).flat();}
+        t.items.push(novo);
+      });
+    });
+    toast(`${plan.length} lead(s) movido(s) para ${tgt.nome}`+(novoSdr?" · coluna SDR atualizada":""));
+  };
+
   // ── Etapas (grupos filhos padronizados) para o "Mover para etapa" da barra de seleção
   const stageOptions=(()=>{
     const seen={};
@@ -4629,6 +4666,12 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
 
     return [...enriched,...legacyFiltered.map(g=>({...g,items:applyFilters(g.items||[])}))];
   },[board,perms,currentUser,groupAccess,isNegociacoes,isVendas,isInativa,filters,search,sortCfg,vendasFilter]);
+  // "Mover para grupo" (em lote, dentro do mesmo quadro). Fora de Negociações, que usa etapas.
+  // Gestão move para qualquer grupo; SDR só para os próprios grupos (e nunca na Base Inativa).
+  const destinosGrupo=(board?.groups||[]).filter(g=>!g.is_parent&&!g.parent_group_id&&
+    (perms.all||perms.editAny||(perms.slug==="sdr"&&g.owner_id===currentUser?.id)));
+  const canMoverGrupo=!!board&&!isNegociacoes&&!(isInativa&&perms.slug==="sdr")&&
+    (perms.all||perms.editAny||perms.slug==="sdr")&&destinosGrupo.length>0;
   const filterCount=(filters.status?.length||0)+(filters.resp?.length||0)+(!isVendas&&filters.dateFrom?1:0)+(!isVendas&&filters.dateTo?1:0)+(!isVendas&&filters.month?1:0)+(search.trim()?1:0);
 
   if(loading) return <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}><Spinner size={40}/><span style={{color:"var(--text3)",fontSize:14}}>Carregando…</span></div>;
@@ -4834,6 +4877,10 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
             style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"8px 14px",fontSize:12}}>
             📦 Mover para quadro
           </button>}
+          {canMoverGrupo&&<button onClick={()=>setMoveGroupM(true)}
+            style={{...T.btn,background:"rgba(255,255,255,.12)",color:"#fff",border:"1px solid rgba(255,255,255,.25)",padding:"8px 14px",fontSize:12}}>
+            ↔ Mover para grupo
+          </button>}
           {isInativa&&<button onClick={bulkReativar}
             style={{...T.btn,background:"#16a34a",color:"#fff",padding:"8px 14px",fontSize:12}}>
             ↩️ Reativar → Pré-Vendas
@@ -4894,6 +4941,10 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
         onSaveAccess={ids=>updateGroupAccess(groupSettingsM.id,ids)}
         onSaveOwner={uid=>updateGroupOwner(groupSettingsM.id,uid)}
         onClose={()=>setGroupSettingsM(null)}/>}
+      {moveGroupM&&board&&<MoveGroupModal count={selected.size} allUsers={allUsers}
+        groups={destinosGrupo}
+        temColunaSdr={(board.columns||[]).some(c=>c.tipo==="user"&&c.nome==="SDR")}
+        onMove={bulkMoveToGroup} onCancel={()=>setMoveGroupM(false)}/>}
       {moveItemsM&&board&&<MoveItemsModal
         items={getSelectedItems()}
         srcBoard={board}
@@ -5288,6 +5339,43 @@ function RoleFormModal({initial={},onSave,onCancel}) {
 // ─────────────────────────────────────────────────────────────────────────────
 // MOVE ITEMS MODAL — move selected items to another board/group (#3)
 // ─────────────────────────────────────────────────────────────────────────────
+// Mover leads selecionados para outro grupo do MESMO quadro (ex.: repassar a carteira
+// de um SDR que saiu). Opcionalmente passa a coluna SDR para o dono do grupo de destino.
+function MoveGroupModal({count,groups,allUsers,temColunaSdr,onMove,onCancel}) {
+  const [destId,setDestId]=useState("");
+  const [trocarSdr,setTrocarSdr]=useState(null); // sem escolha prévia: quem move decide
+  const [movendo,setMovendo]=useState(false);
+  const dest=groups.find(g=>g.id===destId)||null;
+  const dono=dest?.owner_id?allUsers.find(u=>u.id===dest.owner_id):null;
+  const precisaEscolha=temColunaSdr&&!!dono;
+  const pronto=!!dest&&(!precisaEscolha||trocarSdr!==null)&&!movendo;
+  const opc=(val,rot,desc)=>(
+    <label style={{display:"flex",gap:9,alignItems:"flex-start",padding:"9px 11px",border:`1.5px solid ${trocarSdr===val?"var(--blue)":"var(--border)"}`,borderRadius:9,cursor:"pointer",marginBottom:8}}>
+      <input type="radio" checked={trocarSdr===val} onChange={()=>setTrocarSdr(val)} style={{marginTop:3}}/>
+      <div><div style={{fontSize:13,fontWeight:700}}>{rot}</div><div style={{fontSize:12,color:"var(--text3)"}}>{desc}</div></div>
+    </label>);
+  return (
+    <Modal title="↔ Mover para outro grupo" onClose={onCancel} width={480}>
+      <div style={{fontSize:13,marginBottom:12}}>{count} lead(s) selecionado(s).</div>
+      <label style={T.lbl}>Grupo de destino</label>
+      <select style={{...T.inp,marginBottom:14}} value={destId} onChange={e=>{setDestId(e.target.value);setTrocarSdr(null);}}>
+        <option value="">Selecione</option>
+        {groups.map(g=><option key={g.id} value={g.id}>{g.nome}</option>)}
+      </select>
+      {precisaEscolha&&<>
+        <label style={T.lbl}>Coluna SDR dos leads movidos</label>
+        {opc(true,`Passar para ${dono.nome}`,"Recomendado ao repassar uma carteira: o comparecimento passa a contar para quem assumiu o lead.")}
+        {opc(false,"Manter como está","A coluna SDR de cada lead não é alterada.")}
+      </>}
+      <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:10}}>
+        <button onClick={onCancel} style={{...T.btn,border:"1px solid var(--border)",background:"none",color:"var(--text)",padding:"9px 16px",fontSize:13}}>Cancelar</button>
+        <button disabled={!pronto} onClick={async()=>{setMovendo(true);await onMove(dest,precisaEscolha&&trocarSdr?dono.id:null);}}
+          style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"9px 18px",fontSize:13,opacity:pronto?1:.5}}>{movendo?"Movendo…":"Mover"}</button>
+      </div>
+    </Modal>
+  );
+}
+
 function MoveItemsModal({items,srcBoard,allBoards,onMove,onCancel}) {
   const [destBoardId,setDestBoardId]=useState("");
   const [destGroups,setDestGroups]=useState([]);
