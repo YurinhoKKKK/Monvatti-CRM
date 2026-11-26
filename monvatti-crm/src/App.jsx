@@ -2052,7 +2052,7 @@ function ItemMenuOpt({icon,label,onClick,danger=false}) {
 
 function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,
   onDragStart,onDragOver,onDrop,onUpdateValue,onRespChange,sentToNegIds=new Set(),stickyFirstCols=0,colWidths=null,
-  siblingStages=null,onMoveStage=null,sentLabel="Negociações",onSendTimer=null,onReativar=null,onRenovar=null}) {
+  siblingStages=null,onMoveStage=null,sentLabel="Negociações",onSendTimer=null,onReativar=null,onRenovar=null,onContrato=null}) {
   const [hov,setHov]=useState(false);
   const [menu,setMenu]=useState(false);
   const [menuPos,setMenuPos]=useState({top:0,right:0});
@@ -2124,6 +2124,7 @@ function ItemRow({item,columns,gc,allUsers,selected,onToggle,onOpen,onDelete,onM
                 : <ItemMenuOpt icon="🤝" label="Enviar para Negociações" onClick={()=>{setMenu(false);onSendToNeg();}}/>
             )}
             {onRenovar&&<ItemMenuOpt icon="🔄" label="Renovar lead" onClick={()=>{setMenu(false);onRenovar();}}/>}
+            {onContrato&&<ItemMenuOpt icon="📄" label="Contrato (Clicksign)" onClick={()=>{setMenu(false);onContrato();}}/>}
             {/* Renovação não vai ao CRM/Timer: a empresa já existe lá com este número e CNPJ */}
             {onSendTimer&&!item.renovacao_de&&(
               enviadoTimer
@@ -2261,7 +2262,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
   onToggleItem,onSelectAll,onAddItem,onDelGroup,onRenameGroup,onToggle,
   onOpenItem,onUpdateValue,onRespChange,onDelItem,onMoveInativa,onDupNeg,onSendToNeg,onSendToVendas,onSendTimer,
   onDragStart,onDragOver,onDrop,onItemDragOver,onItemDrop,onGroupSettings,sentToNegIds=new Set(),sentLabel="Negociações",
-  sortCfg={colId:null,dir:1},setSortCfg=()=>{},stickyFirstCols=0,siblingStages=null,onMoveStage=null,onReativar=null,onRenovar=null,
+  sortCfg={colId:null,dir:1},setSortCfg=()=>{},stickyFirstCols=0,siblingStages=null,onMoveStage=null,onReativar=null,onRenovar=null,onContrato=null,
   onGroupDragStart=null,onGroupDragEnd=null,canReorderGroups=false}) {
   const [renaming,setRenaming]=useState(false);
   const [gname,setGname]=useState(group.nome);
@@ -2316,7 +2317,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
   const bodyRef=useRef();     // body scroll container (overflow:auto)
   useEffect(()=>{ if(renaming)nref.current?.focus(); },[renaming]);
   const allSel=items.length>0&&items.every(i=>selectedItems.has(i.id));
-  const canEdit=perms.all||perms.editAny||(perms.slug==="sdr"&&group.owner_id===currentUser?.id)||((perms.slug==="closer")&&(groupAccess||[]).includes(currentUser?.id));
+  const canEdit=perms.all||perms.editAny||(perms.slug==="sdr"&&(group.owner_id===currentUser?.id||(groupAccess||[]).includes(currentUser?.id)))||((perms.slug==="closer")&&(groupAccess||[]).includes(currentUser?.id));
   const canRename=perms.all||["administrador","ceo","financeiro","gerente_comercial"].includes(perms.slug);
 
   // Sincroniza scroll horizontal: arrastar o body move o header junto
@@ -2490,6 +2491,7 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
                         onMoveInativa={onMoveInativa?()=>onMoveInativa(item):null}
                         onReativar={onReativar?()=>onReativar(item):null}
                         onRenovar={onRenovar?()=>onRenovar(item):null}
+                        onContrato={onContrato?()=>onContrato(item):null}
                         onDupNeg={onDupNeg?()=>onDupNeg(item):null}
                         onSendToNeg={onSendToNeg?()=>onSendToNeg(item):null}
                         onSendToVendas={onSendToVendas?()=>onSendToVendas(item):null}
@@ -2522,6 +2524,341 @@ function Group({group,columns,items,isDraggingOver,allUsers,selectedItems,isMobi
     </div>
   );
 }
+// ─────────────────────────────────────────────────────────────────────────────
+// CONTRATO (Clicksign) — gera o contrato pelo modelo, mostra a prévia, envia
+// para assinatura e acompanha o estado. Tudo passa pela função clicksign-contrato;
+// o token da Clicksign nunca chega ao navegador.
+// ─────────────────────────────────────────────────────────────────────────────
+const CT_MARKETPLACES=["Mercado Livre","Amazon","Shopee"];
+const CT_FREQ=["semanalmente","quinzenalmente","mensalmente"];
+const CT_UFS="AC AL AP AM BA CE DF ES GO MA MT MS MG PA PB PR PE PI RJ RN RS RO RR SC SP SE TO".split(" ");
+const CT_STATUS={rascunho:{rot:"Rascunho (não enviado)",cor:"#6b7280"},enviado:{rot:"Enviado, aguardando assinaturas",cor:"#2563eb"},
+  parcial:{rot:"Assinatura parcial",cor:"#d97706"},assinado:{rot:"Assinado por todos",cor:"#059669"},recusado:{rot:"Recusado",cor:"#dc2626"},
+  cancelado:{rot:"Cancelado",cor:"#6b7280"},expirado:{rot:"Prazo de assinatura vencido",cor:"#9333ea"},descartado:{rot:"Descartado",cor:"#6b7280"}};
+const CT_VARS=[["RAZAO_SOCIAL","Contratante"],["CNPJ","CNPJ"],["ENDERECO","Endereço"],["REPRESENTANTE","Representante legal"],["CPF","CPF"],
+  ["MARKETPLACES","Marketplaces"],["MARKETPLACES_FULL","Envio full"],["PRAZO","Prazo"],["FREQUENCIA","Reuniões"],["VALOR_TOTAL","Valor total"],
+  ["PARCELA1_VALOR","1ª parcela"],["PARCELA1_VENCIMENTO","Vencimento da 1ª parcela"],["DEMAIS_PARCELAS","Demais parcelas"],["DATA_CONTRATO","Data do contrato"]];
+const ctCPF=v=>{const d=String(v??"").replace(/\D/g,"").slice(0,11);return d.replace(/^(\d{3})(\d)/,"$1.$2").replace(/^(\d{3})\.(\d{3})(\d)/,"$1.$2.$3").replace(/\.(\d{3})(\d)/,".$1-$2");};
+const ctCEP=v=>{const d=String(v??"").replace(/\D/g,"").slice(0,8);return d.replace(/^(\d{2})(\d)/,"$1.$2").replace(/^(\d{2})\.(\d{3})(\d)/,"$1.$2-$3");};
+
+function CtCampo({rot,children,w=1}){return <div style={{gridColumn:`span ${w}`,minWidth:0}}><label style={{...T.lbl,marginBottom:4}}>{rot}</label>{children}</div>;}
+function CtFixo({v}){return <div style={{...T.inp,background:"var(--surface2)",color:v?"var(--text)":"#dc2626",minHeight:39}}>{v||"vazio na coluna"}</div>;}
+function ContratoModal({item,board,onClose,onChanged}) {
+  const toast=useToast();
+  const col=n=>(board.columns||[]).find(c=>c.nome===n);
+  const val=n=>{const c=col(n);const v=c?item.values?.[c.id]:null;return v==null?"":v;};
+  const numero=n=>{const b=val(n);if(b===""||b==null)return null;const x=typeof b==="number"?b:parseFloat(String(b).replace(/[^0-9.,-]/g,"").replace(/\./g,"").replace(",","."));return Number.isFinite(x)?x:null;};
+  // ── Vêm das colunas do quadro (a fonte é a coluna; aqui só leitura)
+  const razao=String(val("Razão Social")||"").trim();
+  const valorTotal=numero("Valor do Projeto");
+  const parcelas=(()=>{const n=parseInt(String(val("Parcelas")).replace(/\D/g,""),10);return Number.isInteger(n)?n:null;})();
+  const prazo=(()=>{const n=parseInt(String(val("Tempo de Projeto")).replace(/\D/g,""),10);return Number.isInteger(n)?n:null;})();
+  const colCnpj=(board.columns||[]).find(c=>c.tipo==="cnpj")||col("CNPJ");
+  const cnpjColuna=formataCNPJ(colCnpj?item.values?.[colCnpj.id]:"");
+  const nomeColuna=(()=>{const v=String(val("Nome")||"").trim();return v==="Nome"?"":v;})();
+  const faltaColuna=[!razao&&"Razão Social",!(valorTotal>0)&&"Valor do Projeto",!(parcelas>=2)&&"Parcelas (mínimo 2)",!(prazo>=1)&&"Tempo de Projeto"].filter(Boolean);
+
+  const [st,setSt]=useState(null);          // estado da integração
+  const [contrato,setContrato]=useState(null); // último contrato deste lead
+  const [carregando,setCarregando]=useState(true);
+  const [ocupado,setOcupado]=useState("");
+  const [erros,setErros]=useState([]);
+  const [previa,setPrevia]=useState(null);
+  const [novo,setNovo]=useState(false);     // gerar outro após recusa/cancelamento
+  const [cfgSig,setCfgSig]=useState({nome:"",email:""});
+  const hoje=ymdLocal(new Date());
+  const [f,setF]=useState({cnpj:cnpjColuna,representante:nomeColuna,cpf:"",email:"",logradouro:"",numero:"",complemento:"",bairro:"",cidade:"",uf:"",cep:"",
+    // Nada vem marcado ou sugerido sem origem: o que não está em coluna é escolhido por quem gera o contrato
+    marketplaces:[],marketplaces_full:[],frequencia:"",parcela1_valor:"",vencimento1:"",dia_vencimento:""});
+  const [cepInfo,setCepInfo]=useState("");   // retorno da busca de endereço pelo CEP
+  const [editSig,setEditSig]=useState(false); // administrador alterando o signatário da Monvatti
+  const set=(k,v)=>setF(p=>({...p,[k]:v}));
+
+  const chama=useCallback(async(action,extra={})=>{
+    const {data,error}=await db.functions.invoke("clicksign-contrato",{body:{action,...extra}});
+    if(error){
+      let j=null;try{j=await error.context.json();}catch{/* sem corpo */}
+      return j||{ok:false,message:error.message||"Falha ao falar com o servidor."};
+    }
+    return data||{ok:false,message:"Resposta vazia do servidor."};
+  },[]);
+  const carregaContrato=useCallback(async()=>{
+    const {data}=await db.from("contratos").select("*").eq("item_id",item.id).neq("status","descartado").order("criado_em",{ascending:false}).limit(1);
+    const c=data?.[0]||null;
+    setContrato(c);
+    return c;
+  },[item.id]);
+  useEffect(()=>{let vivo=true;(async()=>{
+    const [s]=await Promise.all([chama("status"),carregaContrato()]);
+    if(!vivo)return;
+    setSt(s);
+    if(s?.signatario_monvatti) setCfgSig(s.signatario_monvatti);
+    // reaproveita só os dados cadastrais já digitados num contrato anterior deste lead (serviço e pagamento, nunca)
+    const {data:ant}=await db.from("contratos").select("dados").eq("item_id",item.id).order("criado_em",{ascending:false}).limit(1);
+    const d=ant?.[0]?.dados;
+    if(vivo&&d) setF(p=>({...p,cnpj:p.cnpj||d.cnpj||"",representante:p.representante||d.representante||"",cpf:d.cpf||"",email:d.email||"",logradouro:d.logradouro||"",numero:d.numero||"",
+      complemento:d.complemento||"",bairro:d.bairro||"",cidade:d.cidade||"",uf:d.uf||"",cep:d.cep||""}));
+    if(vivo)setCarregando(false);
+  })();return()=>{vivo=false;};},[chama,carregaContrato,item.id]);
+
+  // Endereço pelo CEP (ViaCEP, consulta pública). Só preenche quando o CEP é digitado aqui.
+  const buscaCep=async valor=>{
+    const cep=String(valor).replace(/\D/g,"");
+    if(cep.length!==8){setCepInfo("");return;}
+    setCepInfo("Buscando endereço…");
+    try{
+      const r=await fetch(`https://viacep.com.br/ws/${cep}/json/`);
+      const j=await r.json();
+      if(!r.ok||j?.erro){setCepInfo("CEP não encontrado. Preencha o endereço à mão.");return;}
+      setF(p=>p.cep.replace(/\D/g,"")!==cep?p:{...p,logradouro:j.logradouro||p.logradouro,bairro:j.bairro||p.bairro,cidade:j.localidade||p.cidade,uf:CT_UFS.includes(j.uf)?j.uf:p.uf});
+      setCepInfo(j.logradouro?"Endereço preenchido pelo CEP. Confira e informe o número.":"CEP geral da cidade: preencha logradouro e bairro.");
+    }catch{setCepInfo("Não foi possível consultar o CEP agora. Preencha o endereço à mão.");}
+  };
+  const num=v=>{const x=parseFloat(String(v??"").replace(/[^0-9.,-]/g,"").replace(/\./g,"").replace(",","."));return Number.isFinite(x)?x:null;};
+  const p1=num(f.parcela1_valor);
+  const demais=(valorTotal>0&&parcelas>=2&&p1>0&&p1<valorTotal)?(valorTotal-p1)/(parcelas-1):null;
+  const demaisOk=demais!=null&&Math.abs(Math.round(demais*100)-demais*100)<1e-6;
+  const faltaForm=[
+    soDigitos(f.cnpj).length!==14&&"CNPJ",f.representante.trim().split(/\s+/).length<2&&"Nome completo do representante",
+    f.cpf.replace(/\D/g,"").length!==11&&"CPF do representante",!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(f.email.trim())&&"E-mail de quem assina",
+    f.logradouro.trim().length<3&&"Logradouro",!f.numero.trim()&&"Número",f.bairro.trim().length<2&&"Bairro",f.cidade.trim().length<2&&"Cidade",
+    !CT_UFS.includes(f.uf)&&"UF",f.cep.replace(/\D/g,"").length!==8&&"CEP",!f.marketplaces.length&&"Marketplaces",!f.marketplaces_full.length&&"Marketplaces do envio full",!CT_FREQ.includes(f.frequencia)&&"Frequência das reuniões",
+    !(p1>0)&&"Valor da 1ª parcela",(p1>0&&!demaisOk)&&"1ª parcela que deixe o restante divisível em parcelas iguais",
+    !f.vencimento1&&"Vencimento da 1ª parcela",!(+f.dia_vencimento>=1&&+f.dia_vencimento<=31)&&"Dia de vencimento das demais parcelas"].filter(Boolean);
+  const configOk=!!(st?.api?.ok&&st?.modelo&&st?.signatario_monvatti?.email);
+  const podeGerar=configOk&&faltaColuna.length===0&&faltaForm.length===0&&!ocupado;
+
+  const gerar=async()=>{
+    setErros([]);setOcupado("Gerando o contrato…");
+    const r=await chama("preparar",{item_id:item.id,dados:{razao_social:razao,cnpj:f.cnpj,logradouro:f.logradouro,numero:f.numero,complemento:f.complemento,bairro:f.bairro,cidade:f.cidade,uf:f.uf,cep:f.cep,
+      representante:f.representante,cpf:f.cpf,email:f.email,marketplaces:f.marketplaces,marketplaces_full:f.marketplaces_full,prazo_meses:prazo,frequencia:f.frequencia,
+      valor_total:valorTotal,parcelas,parcela1_valor:p1,vencimento1:f.vencimento1,dia_vencimento:+f.dia_vencimento}});
+    setOcupado("");
+    if(!r.ok){setErros(r.erros||[r.message||"Não foi possível gerar o contrato."]);return;}
+    setPrevia(r);setNovo(false);await carregaContrato();
+  };
+  const enviar=async()=>{
+    setOcupado("Enviando para assinatura…");
+    const r=await chama("enviar",{contrato_id:previa.contrato_id});
+    setOcupado("");
+    if(!r.ok){setErros([r.message||"Não foi possível enviar."]);return;}
+    toast(r.aviso?"Contrato ativado, mas o e-mail automático falhou: "+r.aviso:"Contrato enviado para assinatura!",r.aviso?"warning":undefined);
+    setPrevia(null);await carregaContrato();onChanged?.();
+  };
+  const descartar=async(id)=>{
+    setOcupado("Descartando o rascunho…");
+    const r=await chama("descartar",{contrato_id:id});
+    setOcupado("");
+    if(!r.ok){setErros([r.message||"Não foi possível descartar."]);return;}
+    setPrevia(null);await carregaContrato();
+  };
+  const sincronizar=async()=>{
+    setOcupado("Conferindo na Clicksign…");
+    const r=await chama("sincronizar",{contrato_id:contrato.id});
+    setOcupado("");
+    if(!r.ok){toast(r.message||"Não foi possível conferir.","error");return;}
+    toast(r.mudou?"Estado atualizado.":"Nada mudou desde a última atualização.");
+    await carregaContrato();if(r.mudou)onChanged?.();
+  };
+  const enviarModelo=async e=>{
+    const arq=e.target.files?.[0];e.target.value="";if(!arq)return;
+    if(!/\.docx$/i.test(arq.name)){toast("Envie o modelo em .docx","error");return;}
+    setOcupado("Enviando o modelo…");
+    const b64=await new Promise((ok,er)=>{const rd=new FileReader();rd.onload=()=>ok(String(rd.result));rd.onerror=er;rd.readAsDataURL(arq);});
+    const r=await chama("modelo_upload",{arquivo_base64:b64,nome:arq.name.replace(/\.docx$/i,"")});
+    setOcupado("");
+    if(!r.ok){toast(r.message||"Modelo recusado.","error");return;}
+    toast("Modelo de contrato atualizado.");setSt(await chama("status"));
+  };
+  const salvarSig=async()=>{
+    setOcupado("Salvando…");const r=await chama("config_set",cfgSig);setOcupado("");
+    if(!r.ok){toast(r.message||"Não foi possível salvar.","error");return;}
+    toast("Signatário da Monvatti salvo.");setEditSig(false);setSt(await chama("status"));
+  };
+  const registrarWebhook=async()=>{
+    setOcupado("Registrando…");const r=await chama("registrar_webhook");setOcupado("");
+    toast(r.message||(r.ok?"Atualização automática ativada.":"Não foi possível registrar."),r.ok&&r.segredo_recebido?undefined:"warning");
+    setSt(await chama("status"));
+  };
+
+  const sLbl={...T.lbl,marginBottom:4};
+  const sBloco={border:"1px solid var(--border)",borderRadius:10,padding:14,marginBottom:14};
+  const sTit={fontSize:12,fontWeight:800,color:"var(--text2)",marginBottom:10,textTransform:"uppercase",letterSpacing:.4};
+  const dataHora=d=>d?new Date(d).toLocaleString("pt-BR"):"pendente";
+  const marcas=k=><div style={{display:"flex",gap:12,flexWrap:"wrap",paddingTop:6}}>{CT_MARKETPLACES.map(m=>(
+    <label key={m} style={{display:"flex",alignItems:"center",gap:6,fontSize:13,cursor:"pointer"}}>
+      <input type="checkbox" checked={f[k].includes(m)} onChange={()=>setF(p=>{const tem=p[k].includes(m);const nv=tem?p[k].filter(x=>x!==m):CT_MARKETPLACES.filter(x=>p[k].includes(x)||x===m);
+        return k==="marketplaces"?{...p,marketplaces:nv,marketplaces_full:p.marketplaces_full.filter(x=>nv.includes(x))}:{...p,[k]:nv};})}
+        disabled={k==="marketplaces_full"&&!f.marketplaces.includes(m)}/>{m}</label>))}</div>;
+
+  const emAndamento=contrato&&!novo&&!previa&&contrato.status!=="rascunho";
+  const rascunhoSolto=contrato&&!previa&&contrato.status==="rascunho";
+  const podeRefazer=contrato&&["recusado","cancelado","expirado"].includes(contrato.status);
+  const info=contrato?CT_STATUS[contrato.status]||{rot:contrato.status,cor:"#6b7280"}:null;
+
+  return (
+    <Modal title="📄 Contrato de Consultoria" onClose={onClose} width={720}>
+      {carregando?<div style={{padding:30,textAlign:"center",color:"var(--text3)"}}>Carregando…</div>:<>
+      {st?.ambiente==="sandbox"&&<div style={{padding:"9px 13px",background:"rgba(217,119,6,.14)",border:"1px solid #d97706",borderRadius:9,marginBottom:14,fontSize:12.5}}>
+        <strong>Ambiente de testes da Clicksign.</strong> Os contratos enviados daqui não têm valor jurídico. Use um lead de teste: a coluna Contrato é atualizada de verdade.</div>}
+      {st&&!st.api?.ok&&<div style={{padding:"9px 13px",background:"rgba(220,38,38,.12)",border:"1px solid #dc2626",borderRadius:9,marginBottom:14,fontSize:12.5}}>
+        Não consegui falar com a Clicksign. {st.api?.detalhe||st.message||""}</div>}
+
+      {/* Configuração pendente */}
+      {st&&(!st.modelo||!st.signatario_monvatti?.email||!st.webhook)&&<div style={sBloco}>
+        <div style={sTit}>Configuração da integração</div>
+        {!st.admin&&<div style={{fontSize:13,color:"var(--text2)"}}>Falta concluir a configuração ({[!st.modelo&&"modelo de contrato",!st.signatario_monvatti?.email&&"signatário da Monvatti",!st.webhook&&"atualização automática"].filter(Boolean).join(", ")}). Peça ao administrador.</div>}
+        {st.admin&&<>
+          {!st.modelo&&<div style={{marginBottom:12}}>
+            <div style={{fontSize:13,marginBottom:6}}>1. Envie o modelo de contrato (.docx com as variáveis entre chaves duplas).</div>
+            <input type="file" accept=".docx" onChange={enviarModelo} disabled={!!ocupado}/>
+          </div>}
+          {!st.signatario_monvatti?.email&&<div style={{marginBottom:12}}>
+            <div style={{fontSize:13,marginBottom:6}}>2. Quem assina pela Monvatti (recebe o contrato por e-mail para assinar).</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr auto",gap:8}}>
+              <input style={T.inp} placeholder="Nome completo" value={cfgSig.nome} onChange={e=>setCfgSig(p=>({...p,nome:e.target.value}))}/>
+              <input style={T.inp} placeholder="E-mail" value={cfgSig.email} onChange={e=>setCfgSig(p=>({...p,email:e.target.value}))}/>
+              <button onClick={salvarSig} disabled={!!ocupado} style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"8px 14px",fontSize:12}}>Salvar</button>
+            </div>
+          </div>}
+          {!st.webhook&&<div>
+            <div style={{fontSize:13,marginBottom:6}}>3. Atualização automática da coluna Contrato quando alguém assinar.</div>
+            <button onClick={registrarWebhook} disabled={!!ocupado||!st.api?.ok} style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"8px 14px",fontSize:12}}>Ativar atualização automática</button>
+          </div>}
+        </>}
+      </div>}
+
+      {st?.admin&&st.signatario_monvatti?.email&&<div style={{fontSize:12,color:"var(--text3)",marginBottom:12}}>
+        Assina pela Monvatti: <strong style={{color:"var(--text2)"}}>{st.signatario_monvatti.nome}</strong> ({st.signatario_monvatti.email}){" "}
+        {!editSig&&<button type="button" onClick={()=>{setCfgSig(st.signatario_monvatti);setEditSig(true);}} style={{background:"none",border:"none",padding:0,cursor:"pointer",color:"var(--blue)",textDecoration:"underline",fontSize:12}}>alterar</button>}
+        {editSig&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr auto auto",gap:8,marginTop:8}}>
+          <input style={T.inp} placeholder="Nome completo" value={cfgSig.nome} onChange={e=>setCfgSig(p=>({...p,nome:e.target.value}))}/>
+          <input style={T.inp} placeholder="E-mail" value={cfgSig.email} onChange={e=>setCfgSig(p=>({...p,email:e.target.value}))}/>
+          <button onClick={salvarSig} disabled={!!ocupado} style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"8px 14px",fontSize:12}}>Salvar</button>
+          <button onClick={()=>setEditSig(false)} style={{...T.btn,border:"1px solid var(--border)",background:"none",color:"var(--text)",padding:"8px 12px",fontSize:12}}>Cancelar</button>
+        </div>}
+      </div>}
+
+      {/* Contrato já enviado: acompanhamento */}
+      {emAndamento&&<div style={sBloco}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
+          <span style={{background:info.cor,color:"#fff",borderRadius:20,padding:"4px 12px",fontSize:12,fontWeight:800}}>{info.rot}</span>
+          {contrato.ambiente==="sandbox"&&<span style={{fontSize:11,color:"#d97706",fontWeight:700}}>TESTE</span>}
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,fontSize:13}}>
+          <div><div style={sLbl}>Enviado em</div>{dataHora(contrato.enviado_em)}</div>
+          <div><div style={sLbl}>Finalizado em</div>{contrato.finalizado_em?dataHora(contrato.finalizado_em):"em aberto"}</div>
+          <div><div style={sLbl}>Cliente ({contrato.dados?.representante})</div>{contrato.cliente_assinou_em?"assinou em "+dataHora(contrato.cliente_assinou_em):"ainda não assinou"}<div style={{fontSize:11,color:"var(--text3)"}}>{contrato.dados?.email}</div></div>
+          <div><div style={sLbl}>Monvatti</div>{contrato.monvatti_assinou_em?"assinou em "+dataHora(contrato.monvatti_assinou_em):"ainda não assinou"}</div>
+        </div>
+        <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
+          <button onClick={sincronizar} disabled={!!ocupado} style={{...T.btn,border:"1px solid var(--border)",background:"none",color:"var(--text)",padding:"8px 14px",fontSize:12}}>Conferir na Clicksign</button>
+          {podeRefazer&&<button onClick={()=>setNovo(true)} style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"8px 14px",fontSize:12}}>Gerar novo contrato</button>}
+        </div>
+        {["enviado","parcial"].includes(contrato.status)&&<div style={{fontSize:11.5,color:"var(--text3)",marginTop:10}}>Para cancelar um contrato já enviado, use o painel da Clicksign. O CRM é avisado e a coluna muda sozinha.</div>}
+      </div>}
+
+      {/* Rascunho que ficou para trás */}
+      {rascunhoSolto&&<div style={{...sBloco,borderColor:"#d97706"}}>
+        <div style={{fontSize:13,marginBottom:10}}>Existe um rascunho gerado em {dataHora(contrato.criado_em)} que não foi enviado. Gerar uma nova prévia substitui esse rascunho.</div>
+        <button onClick={()=>descartar(contrato.id)} disabled={!!ocupado} style={{...T.btn,border:"1px solid var(--border)",background:"none",color:"var(--text)",padding:"7px 12px",fontSize:12}}>Descartar rascunho</button>
+      </div>}
+
+      {/* Prévia */}
+      {previa&&<div style={sBloco}>
+        <div style={sTit}>Confira antes de enviar</div>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12.5}}><tbody>
+          {CT_VARS.map(([k,rot])=><tr key={k} style={{borderBottom:"1px solid var(--border)"}}>
+            <td style={{padding:"6px 8px 6px 0",color:"var(--text3)",fontWeight:700,whiteSpace:"nowrap",verticalAlign:"top"}}>{rot}</td>
+            <td style={{padding:"6px 0"}}>{previa.textos?.[k]}</td></tr>)}
+        </tbody></table>
+        <div style={{fontSize:12.5,margin:"12px 0"}}>
+          <strong>Assinam:</strong> {(previa.signatarios||[]).map(s=>`${s.papel}: ${s.nome} (${s.email})`).join(" · ")}
+        </div>
+        {previa.previa_url&&<a href={previa.previa_url} target="_blank" rel="noreferrer" style={{fontSize:13,fontWeight:700,color:"var(--blue)"}}>Abrir o documento gerado ↗</a>}
+        <div style={{fontSize:11.5,color:"var(--text3)",marginTop:6}}>O link do documento vale por poucos minutos. Depois de enviado, o contrato não pode mais ser editado.</div>
+        <div style={{display:"flex",gap:8,marginTop:14,justifyContent:"flex-end"}}>
+          <button onClick={()=>descartar(previa.contrato_id)} disabled={!!ocupado} style={{...T.btn,border:"1px solid var(--border)",background:"none",color:"var(--text)",padding:"9px 16px",fontSize:13}}>Voltar e corrigir</button>
+          <button onClick={enviar} disabled={!!ocupado} style={{...T.btn,background:"#059669",color:"#fff",padding:"9px 18px",fontSize:13}}>Enviar para assinatura</button>
+        </div>
+      </div>}
+
+      {/* Formulário */}
+      {!emAndamento&&!previa&&<>
+        {faltaColuna.length>0&&<div style={{padding:"10px 13px",background:"rgba(220,38,38,.12)",border:"1px solid #dc2626",borderRadius:9,marginBottom:14,fontSize:13}}>
+          Preencha no quadro de Vendas antes de gerar o contrato: <strong>{faltaColuna.join(", ")}</strong>.</div>}
+        <div style={sBloco}>
+          <div style={sTit}>Do quadro de Vendas (altere na coluna)</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+            <CtCampo rot="Razão Social" w={4}><CtFixo v={razao}/></CtCampo>
+            <CtCampo rot="Valor do Projeto" w={2}><CtFixo v={valorTotal>0?fmtBRL(valorTotal):""}/></CtCampo>
+            <CtCampo rot="Parcelas"><CtFixo v={parcelas?String(parcelas):""}/></CtCampo>
+            <CtCampo rot="Prazo (meses)"><CtFixo v={prazo?String(prazo):""}/></CtCampo>
+          </div>
+        </div>
+        <div style={sBloco}>
+          <div style={sTit}>Contratante</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+            <CtCampo rot="CNPJ" w={2}>{cnpjColuna?<CtFixo v={cnpjColuna}/>:<input style={T.inp} value={f.cnpj} onChange={e=>set("cnpj",formataCNPJ(e.target.value))} placeholder="00.000.000/0001-00"/>}</CtCampo>
+            <CtCampo rot="CEP" w={2}><input style={T.inp} value={f.cep} onChange={e=>{const v=ctCEP(e.target.value);set("cep",v);buscaCep(v);}} placeholder="00.000-000"/>
+              {cepInfo&&<div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>{cepInfo}</div>}</CtCampo>
+            <CtCampo rot="Logradouro (com Rua, Avenida...)" w={3}><input style={T.inp} value={f.logradouro} onChange={e=>set("logradouro",e.target.value)} placeholder="Rua das Flores"/></CtCampo>
+            <CtCampo rot="Número"><input style={T.inp} value={f.numero} onChange={e=>set("numero",e.target.value)}/></CtCampo>
+            <CtCampo rot="Complemento (opcional)" w={2}><input style={T.inp} value={f.complemento} onChange={e=>set("complemento",e.target.value)}/></CtCampo>
+            <CtCampo rot="Bairro" w={2}><input style={T.inp} value={f.bairro} onChange={e=>set("bairro",e.target.value)}/></CtCampo>
+            <CtCampo rot="Cidade" w={3}><input style={T.inp} value={f.cidade} onChange={e=>set("cidade",e.target.value)}/></CtCampo>
+            <CtCampo rot="UF"><select style={T.inp} value={f.uf} onChange={e=>set("uf",e.target.value)}><option value="">UF</option>{CT_UFS.map(u=><option key={u}>{u}</option>)}</select></CtCampo>
+          </div>
+        </div>
+        <div style={sBloco}>
+          <div style={sTit}>Representante legal (quem assina pelo cliente)</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+            <CtCampo rot="Nome completo" w={2}><input style={T.inp} value={f.representante} onChange={e=>set("representante",e.target.value)}/></CtCampo>
+            <CtCampo rot="CPF" w={2}><input style={T.inp} value={f.cpf} onChange={e=>set("cpf",ctCPF(e.target.value))} placeholder="000.000.000-00"/></CtCampo>
+            <CtCampo rot="E-mail (recebe o contrato para assinar)" w={4}><input style={T.inp} type="email" value={f.email} onChange={e=>set("email",e.target.value)}/></CtCampo>
+          </div>
+        </div>
+        <div style={sBloco}>
+          <div style={sTit}>Serviço</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:10}}>
+            <CtCampo rot="Marketplaces do contrato">{marcas("marketplaces")}</CtCampo>
+            <CtCampo rot="Envio full para">{marcas("marketplaces_full")}</CtCampo>
+            <CtCampo rot="Reuniões realizadas"><select style={T.inp} value={f.frequencia} onChange={e=>set("frequencia",e.target.value)}><option value="">Selecione</option>{CT_FREQ.map(x=><option key={x}>{x}</option>)}</select></CtCampo>
+          </div>
+        </div>
+        <div style={sBloco}>
+          <div style={sTit}>Pagamento</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}}>
+            <CtCampo rot="Valor da 1ª parcela (R$)"><input style={T.inp} value={f.parcela1_valor} onChange={e=>set("parcela1_valor",e.target.value)} placeholder="2.300,00"/></CtCampo>
+            <CtCampo rot="Vencimento da 1ª parcela"><input style={T.inp} type="date" min={hoje} value={f.vencimento1} onChange={e=>set("vencimento1",e.target.value)}/></CtCampo>
+            <CtCampo rot="Dia de vencimento das demais"><input style={T.inp} type="number" min={1} max={31} value={f.dia_vencimento} onChange={e=>set("dia_vencimento",e.target.value)}/></CtCampo>
+          </div>
+          <div style={{display:"flex",gap:14,flexWrap:"wrap",marginTop:8,fontSize:12}}>
+            {valorTotal>0&&parcelas>=2&&<button type="button" onClick={()=>set("parcela1_valor",(Math.round(valorTotal/parcelas*100)/100).toLocaleString("pt-BR",{minimumFractionDigits:2}))}
+              style={{background:"none",border:"none",padding:0,cursor:"pointer",color:"var(--blue)",textDecoration:"underline",fontSize:12}}>Usar parcelas iguais ({fmtBRL(valorTotal/parcelas)})</button>}
+            {f.vencimento1&&<button type="button" onClick={()=>set("dia_vencimento",String(+f.vencimento1.slice(8,10)))}
+              style={{background:"none",border:"none",padding:0,cursor:"pointer",color:"var(--blue)",textDecoration:"underline",fontSize:12}}>Usar o mesmo dia da 1ª parcela ({+f.vencimento1.slice(8,10)})</button>}
+          </div>
+          {parcelas>=2&&p1>0&&<div style={{fontSize:12.5,marginTop:10,color:demaisOk?"var(--text2)":"#dc2626"}}>
+            {demaisOk?<>Demais parcelas: <strong>{parcelas-1} × {fmtBRL(demais)}</strong></>:"O restante não divide em parcelas iguais. Ajuste o valor da 1ª parcela."}</div>}
+        </div>
+        {erros.length>0&&<div style={{padding:"10px 13px",background:"rgba(220,38,38,.12)",border:"1px solid #dc2626",borderRadius:9,marginBottom:12,fontSize:13}}>
+          {erros.map((e,i)=><div key={i}>{e}</div>)}</div>}
+        {faltaForm.length>0&&<div style={{fontSize:12,color:"var(--text3)",marginBottom:10}}>Falta preencher: {faltaForm.join(", ")}.</div>}
+        <div style={{display:"flex",justifyContent:"flex-end",gap:8,alignItems:"center"}}>
+          {ocupado&&<span style={{fontSize:12,color:"var(--text3)"}}>{ocupado}</span>}
+          <button onClick={onClose} style={{...T.btn,border:"1px solid var(--border)",background:"none",color:"var(--text)",padding:"9px 16px",fontSize:13}}>Fechar</button>
+          <button onClick={gerar} disabled={!podeGerar} title={!configOk?"Conclua a configuração da integração":""}
+            style={{...T.btn,background:"var(--blue)",color:"#fff",padding:"9px 18px",fontSize:13,opacity:podeGerar?1:.5}}>Gerar prévia do contrato</button>
+        </div>
+      </>}
+      {(emAndamento||previa)&&erros.length>0&&<div style={{padding:"10px 13px",background:"rgba(220,38,38,.12)",border:"1px solid #dc2626",borderRadius:9,fontSize:13}}>{erros.map((e,i)=><div key={i}>{e}</div>)}</div>}
+      {(emAndamento||previa)&&ocupado&&<div style={{fontSize:12,color:"var(--text3)",marginTop:8}}>{ocupado}</div>}
+      </>}
+    </Modal>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 function ItemPanel({item,board,allUsers,currentUser,onClose,onUpdateValue,onRespChange,onAddUpdate,onDelUpdate,onEditUpdate,canModerar=false,verExcluidas=false}) {
   const [submitting,setSubmitting]=useState(false);
@@ -3104,6 +3441,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
   const [showExport,setShowExport]=useState(false);
   const [selected,setSelected]=useState(new Set());
   const [stageMenuOpen,setStageMenuOpen]=useState(false);
+  const [contratoItem,setContratoItem]=useState(null); // lead aberto no modal de contrato (Clicksign)
   const [timerItem,setTimerItem]=useState(null); // item aberto no envio ao CRM/Timer // menu "Mover para etapa" da barra de seleção
   const [dragState,setDragState]=useState(null);
   const [dragOverGroup,setDragOverGroup]=useState(null);
@@ -4211,6 +4549,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
   };
   const isVendas         = board?.nome==="Vendas";            // filtro de período
   const isInativa        = board?.nome==="Base Inativa";      // SDR vê todos os grupos aqui
+  const canContrato      = isVendas&&!!(perms.all||["ceo","gerente_comercial","financeiro","closer"].includes(perms.slug)); // gerar/acompanhar contrato (Clicksign)
   const canRenovar       = isVendas&&!!(perms.all||perms.editAny); // botão "Renovar lead" (só Vendas)
   const canActions       = isPreVendas;                       // mover inativa habilitado no Pré-Vendas
 
@@ -4225,7 +4564,8 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
       let gs=board.groups;
       // SDR vê só os grupos dos quais é dono, EXCETO na Base Inativa: lá vê tudo
       // (o grupo único da Base Inativa não tem dono, e ficava invisível ao SDR).
-      if(perms.slug==="sdr"&&!isInativa) gs=gs.filter(g=>g.owner_id===currentUser?.id);
+      // Também vê grupos compartilhados com ele em group_access (ex.: carteira de um SDR que saiu).
+      if(perms.slug==="sdr"&&!isInativa) gs=gs.filter(g=>g.owner_id===currentUser?.id||(groupAccess[g.id]||[]).includes(currentUser?.id));
       else if(perms.slug==="closer") gs=gs.filter(g=>(groupAccess[g.id]||[]).includes(currentUser?.id));
       // Para Vendas: aplica filtro de período adicional.
       // Âncora = valor da coluna "Data Entrada" (e NÃO o created_at, que é quando o lead
@@ -4282,7 +4622,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
     // Grupos legados (antes da migração) ficam visíveis normalmente
     const legacyFiltered=legacyGroups.filter(g=>{
       if(perms.all||perms.viewAll) return true;
-      if(perms.slug==="sdr") return g.owner_id===currentUser?.id;
+      if(perms.slug==="sdr") return g.owner_id===currentUser?.id||(groupAccess[g.id]||[]).includes(currentUser?.id);
       if(perms.slug==="closer") return (groupAccess[g.id]||[]).includes(currentUser?.id);
       return true;
     });
@@ -4422,6 +4762,7 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
                 onMoveInativa={canActions?item=>moveInativa(group.id,item):null}
                 onReativar={isInativa?item=>reativarLead(group.id,item):null}
                 onRenovar={canRenovar?item=>setConfirmM({title:"Renovar lead",message:`Criar uma renovação para o cliente ${item.numero_cliente??"sem código"}? A cópia terá o mesmo código e virá com Razão Social, Nome, Empresa, CNPJ, Closer e SDR preenchidos.`,onConfirm:()=>{setConfirmM(null);renovarLead(group.id,item);}}):null}
+                onContrato={canContrato?item=>setContratoItem(item):null}
                 onDupNeg={null}
                 onSendToNeg={isPreVendas?item=>sendToNeg(group.id,item):null}
                 onSendToVendas={isNegociacoes&&perms.sendToVendas?item=>sendToVendas(group.id,item):null}
@@ -4471,6 +4812,8 @@ function BoardView({boardId,boards,allBoardsRaw,allUsers,currentUser,wsId,perms,
       {showFilters&&<FilterPanel board={board} allUsers={allUsers} filters={filters} setFilters={setFilters} onClose={()=>setShowFilters(false)}/>}
       {showColMgr&&<ColumnManagerModal board={board} toast={toast} onClose={()=>setShowColMgr(false)} onRefresh={()=>loadBoard(boardId)}/>}
       {showExport&&<ExportModal board={{...board,groups:visibleGroups}} allUsers={allUsers} onClose={()=>setShowExport(false)}/>}
+      {contratoItem&&<ContratoModal item={contratoItem} board={board}
+        onClose={()=>setContratoItem(null)} onChanged={()=>loadBoard(boardId)}/>}
       {timerItem&&<TimerIntakeModal item={timerItem} board={board} allUsers={allUsers}
         onClose={()=>setTimerItem(null)} onSent={marcarEnviadoTimer}/>}
       {parentGroupM!==null&&(
